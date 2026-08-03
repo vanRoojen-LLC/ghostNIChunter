@@ -3,8 +3,8 @@ targetScope = 'resourceGroup'
 @description('Automation Account name. Leave blank to generate a unique name in the selected resource group.')
 param automationAccountName string = ''
 
-@description('Full resource ID of the first Windows Azure VM to scan. The Automation identity receives Virtual Machine Contributor on this VM only.')
-param targetVmResourceId string
+@description('Full resource IDs of the target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
+param targetResourceGroupIds array
 
 @description('Optional full resource ID of an existing Log Analytics workspace. Enables history collection and the workbook.')
 param logAnalyticsWorkspaceResourceId string = ''
@@ -16,10 +16,6 @@ param runbookScriptUri string = 'https://raw.githubusercontent.com/vanRoojen-LLC
 param runbookCacheBust string = utcNow('yyyyMMddHHmmss')
 
 var resolvedAutomationAccountName = empty(automationAccountName) ? toLower('aa-ghostnic-${take(uniqueString(resourceGroup().id, deployment().name), 10)}') : automationAccountName
-var targetVmResourceIdParts = split(targetVmResourceId, '/')
-var targetSubscriptionId = targetVmResourceIdParts[2]
-var targetResourceGroupName = targetVmResourceIdParts[4]
-var targetVmName = targetVmResourceIdParts[8]
 var runbookName = 'Invoke-GhostNicMaintenance'
 var tags = {
   managedBy: 'vanRoojen LLC'
@@ -66,11 +62,11 @@ resource azComputeModule 'Microsoft.Automation/automationAccounts/modules@2023-1
 
 resource configuredTargets 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = {
   parent: automationAccount
-  name: 'GhostNicTargetVmResourceIds'
+  name: 'GhostNicTargetResourceGroupIds'
   properties: {
-    description: 'One or more target VM resource IDs, separated by commas, semicolons, or new lines.'
+    description: 'One or more target resource-group IDs, separated by commas, semicolons, or new lines.'
     isEncrypted: false
-    value: '"${targetVmResourceId}"'
+    value: join(targetResourceGroupIds, '\n')
   }
 }
 
@@ -95,15 +91,14 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
   }
 }
 
-module targetVmRole 'target-vm-role.bicep' = {
-  name: 'ghostnic-vm-rbac-${take(uniqueString(targetVmResourceId, resolvedAutomationAccountName), 12)}'
-  scope: resourceGroup(targetSubscriptionId, targetResourceGroupName)
+module targetResourceGroupRoles 'target-resource-group-role.bicep' = [for targetResourceGroupId in targetResourceGroupIds: {
+  name: 'ghostnic-rg-rbac-${take(uniqueString(targetResourceGroupId, resolvedAutomationAccountName), 12)}'
+  scope: resourceGroup(split(targetResourceGroupId, '/')[2], split(targetResourceGroupId, '/')[4])
   params: {
-    targetVmName: targetVmName
-    targetVmResourceId: targetVmResourceId
+    targetResourceGroupId: targetResourceGroupId
     automationPrincipalId: automationAccount.identity.principalId
   }
-}
+}]
 
 resource automationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceResourceId)) {
   scope: automationAccount
@@ -139,4 +134,4 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnal
 
 output automationAccountName string = resolvedAutomationAccountName
 output runbookName string = runbookName
-output targetVmResourceId string = targetVmResourceId
+output targetResourceGroupIds array = targetResourceGroupIds
