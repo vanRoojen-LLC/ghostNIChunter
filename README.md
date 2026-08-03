@@ -4,7 +4,8 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with a system-assigned managed identity and publishes one PowerShell runbook: `Invoke-GhostNicMaintenance`. The runbook uses Azure VM Run Command, so it does not require a Hybrid Runbook Worker or credentials stored in Automation.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803.json)
+<a href="https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazurebutton" alt="Deploy to Azure"></a>
+<a href="https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazuregovbutton" alt="Deploy to Azure Gov"></a>
 
 ## What it does
 
