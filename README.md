@@ -35,11 +35,14 @@ Connect-AzAccount
   -ResourceGroupName '<automation-resource-group>' `
   -Location 'westus3' `
   -AutomationAccountName 'vr-ghostnic-prod' `
-  -TargetScope '/subscriptions/<subscription-id>/resourceGroups/<vm-resource-group>' `
+  -TargetResourceGroupIds @(
+    '/subscriptions/<subscription-id>/resourceGroups/<vm-resource-group-1>'
+    '/subscriptions/<subscription-id>/resourceGroups/<vm-resource-group-2>'
+  ) `
   -LogAnalyticsWorkspaceResourceId '/subscriptions/<subscription-id>/resourceGroups/<monitoring-rg>/providers/Microsoft.OperationalInsights/workspaces/<workspace-name>'
 ```
 
-`TargetScope` is optional. When supplied, the deployment grants the Automation identity **Virtual Machine Contributor** at that exact scope, which is the minimum built-in role that includes `Microsoft.Compute/virtualMachines/runCommand/write`. Use a VM resource ID rather than a resource-group ID to limit authority to one VM.
+`TargetResourceGroupIds` grants the Automation identity **Virtual Machine Contributor** separately at each selected resource-group scope, which is the minimum built-in role that includes `Microsoft.Compute/virtualMachines/runCommand/write`. The runbook discovers Windows VMs in those groups and honors the `ghostNicHunterExclusions` VM tag (`scan`, `remove`, or `scan,remove`).
 
 ### GitHub Actions alternative
 

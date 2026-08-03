@@ -12,12 +12,12 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$Location,
 
-    [Parameter(Mandatory)]
-    [ValidatePattern('^[a-zA-Z][a-zA-Z0-9-]{4,49}$')]
-    [string]$AutomationAccountName,
+    [ValidatePattern('^$|^[a-zA-Z][a-zA-Z0-9-]{4,49}$')]
+    [string]$AutomationAccountName = '',
 
-    [ValidatePattern('^/subscriptions/[0-9a-fA-F-]{36}(/resourceGroups/[^/]+)?(/providers/Microsoft\.Compute/virtualMachines/[^/]+)?$')]
-    [string]$TargetScope,
+    [Parameter(Mandatory)]
+    [ValidatePattern('^/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+$')]
+    [string[]]$TargetResourceGroupIds,
 
     [ValidatePattern('^$|^/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+/providers/Microsoft\.OperationalInsights/workspaces/[^/]+$')]
     [string]$LogAnalyticsWorkspaceResourceId = '',
@@ -27,6 +27,7 @@ param(
     [hashtable]$Tags = @{
         managedBy = 'vanRoojen LLC'
         workload  = 'ghost-nic-hunter'
+        sourceRepository = 'vanRoojen-LLC/ghostNIChunter'
     }
 )
 
@@ -45,13 +46,24 @@ foreach ($requiredFile in @($templateFile, $runbookFile, $workbookFile)) {
 }
 
 Set-AzContext -SubscriptionId $SubscriptionId | Out-Null
+try { $sourceRevision = (git -C $repoRoot rev-parse HEAD 2>$null).Trim() } catch { $sourceRevision = 'unknown' }
+$Tags.sourceRevision = if ($sourceRevision) { $sourceRevision } else { 'unknown' }
+$Tags.deploymentTimestampUtc = (Get-Date).ToUniversalTime().ToString('o')
+$Tags.component = 'automation'
+$targetResourceGroupIds = @($TargetResourceGroupIds | ForEach-Object { $_.TrimEnd('/') } | Select-Object -Unique)
+if (-not $targetResourceGroupIds) { throw 'At least one target resource group ID is required.' }
+if ([string]::IsNullOrWhiteSpace($AutomationAccountName)) {
+    $suffix = Get-Random -Minimum 1000 -Maximum 10000
+    $AutomationAccountName = "aa-ghostnic-$($Location.ToLowerInvariant())-$suffix"
+    if ($AutomationAccountName.Length -gt 50) { $AutomationAccountName = $AutomationAccountName.Substring(0, 50) }
+}
 
 if ($WhatIfPreference) {
     [pscustomobject]@{
         AutomationAccount = $AutomationAccountName
         ResourceGroup     = $ResourceGroupName
         Location          = $Location
-        TargetScope       = $TargetScope
+        TargetResourceGroupIds = $targetResourceGroupIds
         Runbook           = 'Invoke-GhostNicMaintenance'
         NextStep          = 'WhatIf only: no Azure resources, runbook content, or role assignments were changed.'
     }
@@ -73,6 +85,7 @@ if ($PSCmdlet.ShouldProcess($AutomationAccountName, 'Deploy Azure Automation acc
         -location $Location `
         -logAnalyticsWorkspaceResourceId $LogAnalyticsWorkspaceResourceId `
         -workbookDisplayName $WorkbookDisplayName `
+        -targetResourceGroupIds $targetResourceGroupIds `
         -tags $Tags | Out-Null
 }
 
@@ -92,10 +105,10 @@ if ($existingRunbook) {
     Import-AzAutomationRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $runbookName -Type PowerShell -Path $runbookFile -Published
 }
 
-if ($TargetScope) {
-    $existingAssignment = Get-AzRoleAssignment -ObjectId $automationAccount.Identity.PrincipalId -Scope $TargetScope -RoleDefinitionName 'Virtual Machine Contributor' -ErrorAction SilentlyContinue
-    if (-not $existingAssignment -and $PSCmdlet.ShouldProcess($TargetScope, 'Grant Virtual Machine Contributor to Automation managed identity')) {
-        New-AzRoleAssignment -ObjectId $automationAccount.Identity.PrincipalId -RoleDefinitionName 'Virtual Machine Contributor' -Scope $TargetScope | Out-Null
+foreach ($targetResourceGroupId in $targetResourceGroupIds) {
+    $existingAssignment = Get-AzRoleAssignment -ObjectId $automationAccount.Identity.PrincipalId -Scope $targetResourceGroupId -RoleDefinitionName 'Virtual Machine Contributor' -ErrorAction SilentlyContinue
+    if (-not $existingAssignment -and $PSCmdlet.ShouldProcess($targetResourceGroupId, 'Grant Virtual Machine Contributor to Automation managed identity')) {
+        New-AzRoleAssignment -ObjectId $automationAccount.Identity.PrincipalId -RoleDefinitionName 'Virtual Machine Contributor' -Scope $targetResourceGroupId | Out-Null
     }
 }
 
@@ -103,7 +116,7 @@ if ($TargetScope) {
     AutomationAccountId = $automationAccount.Id
     ManagedIdentityId   = $automationAccount.Identity.PrincipalId
     Runbook             = $runbookName
-    RoleScope           = $TargetScope
+    TargetResourceGroupIds = $targetResourceGroupIds
     WorkbookEnabled     = -not [string]::IsNullOrWhiteSpace($LogAnalyticsWorkspaceResourceId)
-    NextStep            = 'Start Invoke-GhostNicMaintenance with Operation=Detect and full VM resource IDs.'
+    NextStep            = 'Start Invoke-GhostNicMaintenance with Operation=Detect; target VMs will be discovered from the configured resource groups.'
 }

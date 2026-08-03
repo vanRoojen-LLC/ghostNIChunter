@@ -15,7 +15,11 @@ The portal deployment does not issue a Run Command or remove anything. It requir
 
 ## Azure authority model
 
-The Automation account uses a system-assigned managed identity. It needs **Virtual Machine Contributor** (or a custom role that includes `Microsoft.Compute/virtualMachines/runCommand/write`) at the exact VM or resource-group scope it will service. Do not grant it subscription-wide authority unless that scope is intentional.
+The Automation account uses a system-assigned managed identity. It needs **Virtual Machine Contributor** (or a custom role that includes `Microsoft.Compute/virtualMachines/runCommand/write`) at each selected target resource-group scope. Do not grant it subscription-wide authority merely to cover multiple groups.
+
+## Target discovery and exclusions
+
+The runbook can discover Windows VMs from the `GhostNicTargetResourceGroupIds` Automation variable. On each VM, the `ghostNicHunterExclusions` tag accepts comma- or semicolon-separated values: `scan` skips detection and removal, `remove` permits detection but blocks removal, and `scan,remove` (or `all`) blocks both. Exclusions are re-read immediately before Run Command is issued.
 
 The person or pipeline running `Deploy-GhostNicHunter.ps1` needs permission to deploy `Microsoft.Automation/automationAccounts` and, when `TargetScope` is set, to create the role assignment. The deployed runbook does not retain operator credentials or a secret.
 

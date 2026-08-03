@@ -13,6 +13,9 @@ param tags object = {
 @description('Existing Log Analytics workspace resource ID. Leave empty to deploy without history collection or workbook.')
 param logAnalyticsWorkspaceResourceId string = ''
 
+@description('Target VM resource-group IDs used by the runbook for discovery.')
+param targetResourceGroupIds array = []
+
 @description('Friendly display name for the Azure Monitor workbook.')
 param workbookDisplayName string = 'Ghost NIC Hunter dashboard'
 
@@ -29,6 +32,16 @@ resource automationAccount 'Microsoft.Automation/automationAccounts@2024-10-23' 
     sku: {
       name: 'Basic'
     }
+  }
+}
+
+resource targetResourceGroups 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = {
+  parent: automationAccount
+  name: 'GhostNicTargetResourceGroupIds'
+  properties: {
+    description: 'Target resource-group IDs, one per line.'
+    isEncrypted: false
+    value: join(targetResourceGroupIds, '\n')
   }
 }
 
@@ -55,6 +68,7 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnal
   name: guid(resourceGroup().id, workbookDisplayName, logAnalyticsWorkspaceResourceId)
   location: resourceGroup().location
   kind: 'shared'
+  tags: union(tags, { component: 'workbook' })
   properties: {
     displayName: workbookDisplayName
     serializedData: loadTextContent('../workbooks/ghostnic-dashboard.json')
