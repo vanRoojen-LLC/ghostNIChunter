@@ -1,7 +1,7 @@
 targetScope = 'resourceGroup'
 
-@description('Full resource IDs of the target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
-param targetResourceGroupIds array
+@description('Comma-separated full resource IDs of target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
+param targetResourceGroupIds string
 
 @description('Public URI of the runbook source. Leave the default unless deploying a reviewed fork or pinned revision.')
 param runbookScriptUri string = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance.ps1'
@@ -10,6 +10,7 @@ param runbookScriptUri string = 'https://raw.githubusercontent.com/vanRoojen-LLC
 param runbookCacheBust string = 'main'
 
 var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(resourceGroup().id, deployment().name), 10)}')
+var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
 var runbookName = 'Invoke-GhostNicMaintenance'
 var versionedRunbookUri = replace(runbookScriptUri, '/main/', '/${runbookCacheBust}/')
 var tags = {
@@ -61,7 +62,7 @@ resource configuredTargets 'Microsoft.Automation/automationAccounts/variables@20
   properties: {
     description: 'One or more target resource-group IDs, separated by commas, semicolons, or new lines.'
     isEncrypted: false
-    value: join(targetResourceGroupIds, '\n')
+    value: join(resolvedTargetResourceGroupIds, '\n')
   }
 }
 
@@ -98,7 +99,7 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
   }
 }
 
-module targetResourceGroupRoles 'target-resource-group-role.bicep' = [for targetResourceGroupId in targetResourceGroupIds: {
+module targetResourceGroupRoles 'target-resource-group-role.bicep' = [for targetResourceGroupId in resolvedTargetResourceGroupIds: {
   name: 'ghostnic-rg-rbac-${take(uniqueString(targetResourceGroupId, resolvedAutomationAccountName), 12)}'
   scope: resourceGroup(split(targetResourceGroupId, '/')[2], split(targetResourceGroupId, '/')[4])
   params: {
@@ -142,6 +143,6 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = {
 
 output automationAccountName string = resolvedAutomationAccountName
 output runbookName string = runbookName
-output targetResourceGroupIds array = targetResourceGroupIds
+output targetResourceGroupIds array = resolvedTargetResourceGroupIds
 output workspaceId string = workspaceId
 output workbookId string = workbook.id

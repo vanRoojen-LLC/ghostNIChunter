@@ -18,7 +18,7 @@ Microsoft describes this as a design behavior of Accelerated Networking after de
 
 ### Deploy to Azure portal wizard
 
-Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, and enter the target resource-group IDs. The wizard automatically generates the Automation account and a dedicated Log Analytics workspace, imports the runbook, deploys the workbook, and grants its managed identity **Virtual Machine Contributor** on each selected target group.
+Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, and enter one target resource-group ID or multiple IDs separated by commas. The wizard automatically generates the Automation account and a dedicated Log Analytics workspace, imports the runbook, deploys the workbook, and grants its managed identity **Virtual Machine Contributor** on each selected target group.
 
 The deploying identity needs permission to create the Automation account, workspace, workbook, and resource-group role assignments. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
 
