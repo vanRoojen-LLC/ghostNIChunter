@@ -5,28 +5,14 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "16212655376244525776"
+      "templateHash": "5659769564907747552"
     }
   },
   "parameters": {
-    "automationAccountName": {
-      "type": "string",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Automation Account name. Leave blank to generate a unique name in the selected resource group."
-      }
-    },
     "targetResourceGroupIds": {
       "type": "array",
       "metadata": {
         "description": "Full resource IDs of the target resource groups. The Automation identity receives Virtual Machine Contributor on each group."
-      }
-    },
-    "logAnalyticsWorkspaceResourceId": {
-      "type": "string",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Optional full resource ID of an existing Log Analytics workspace. Enables history collection and the workbook."
       }
     },
     "runbookScriptUri": {
@@ -38,22 +24,25 @@
     },
     "runbookCacheBust": {
       "type": "string",
-      "defaultValue": "[utcNow('yyyyMMddHHmmss')]",
+      "defaultValue": "main",
       "metadata": {
-        "description": "Cache-busting revision or build identifier appended to the runbook source URI."
+        "description": "Git branch or commit revision used in the published runbook URL. Change this when deploying a new revision."
       }
     }
   },
   "variables": {
     "$fxv#0": "{\r\n  \"version\": \"Notebook/1.0\",\r\n  \"items\": [\r\n    {\r\n      \"type\": 1,\r\n      \"content\": {\r\n        \"json\": \"# Ghost NIC Hunter\\n\\n**Operational state from Azure Automation JobStreams.** Current values are the newest successful scan for each VM; historical values retain every recorded scan, including VMs that have since been cleaned. Data normally arrives a few minutes after the Automation job completes.\"\r\n      },\r\n      \"name\": \"title\"\r\n    },\r\n    {\r\n      \"type\": 3,\r\n      \"content\": {\r\n        \"version\": \"KqlItem/1.0\",\r\n        \"query\": \"let latest = AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\\n| where Succeeded\\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId;\\nlatest\\n| summarize ['Current ghost NICs'] = sum(GhostedCount), ['VMs with ghosts'] = countif(GhostedCount > 0), ['VMs scanned'] = count()\",\r\n        \"size\": 0,\r\n        \"queryType\": 0,\r\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\r\n        \"visualization\": \"tiles\",\r\n        \"tileSettings\": { \"showBorder\": false, \"size\": \"small\" }\r\n      },\r\n      \"name\": \"current-summary\"\r\n    },\r\n    {\r\n      \"type\": 3,\r\n      \"content\": {\r\n        \"version\": \"KqlItem/1.0\",\r\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount)\\n| where Succeeded and Operation == 'Remove'\\n| summarize ['Removal jobs'] = count(), ['Ghost NICs presented for removal'] = sum(GhostedCount), ['Registry paths removed'] = sum(RemovedCount), ['VMs remediated'] = dcount(VmResourceId)\",\r\n        \"size\": 0,\r\n        \"queryType\": 0,\r\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\r\n        \"visualization\": \"tiles\",\r\n        \"tileSettings\": { \"showBorder\": false, \"size\": \"small\" }\r\n      },\r\n      \"name\": \"removal-summary\"\r\n    },\r\n    {\r\n      \"type\": 1,\r\n      \"content\": { \"json\": \"## Current top offenders\\n\\nThe latest successful scan is authoritative for present work. Run a detection job before deciding to remove anything.\" },\r\n      \"name\": \"current-heading\"\r\n    },\r\n    {\r\n      \"type\": 3,\r\n      \"content\": {\r\n        \"version\": \"KqlItem/1.0\",\r\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), ValidCount = toint(event.ValidCount), LastScanUtc = todatetime(event.DetectedAtUtc)\\n| where Succeeded\\n| summarize arg_max(TimeGenerated, GhostedCount, ValidCount, LastScanUtc) by VmResourceId\\n| where GhostedCount > 0\\n| order by GhostedCount desc, LastScanUtc asc\\n| project VM = VmResourceId, ['Ghost NICs now'] = GhostedCount, ['Valid NICs'] = ValidCount, ['Last scan UTC'] = LastScanUtc\",\r\n        \"size\": 0,\r\n        \"queryType\": 0,\r\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\r\n        \"visualization\": \"table\",\r\n        \"gridSettings\": { \"filter\": true }\r\n      },\r\n      \"name\": \"current-top-offenders\"\r\n    },\r\n    {\r\n      \"type\": 1,\r\n      \"content\": { \"json\": \"## Cumulative offenders and utility efficacy\\n\\nCumulative observations are intentional: repeated ghost NIC findings on the same VM are a recurrence signal, including for VMs that have since been cleaned.\" },\r\n      \"name\": \"history-heading\"\r\n    },\r\n    {\r\n      \"type\": 3,\r\n      \"content\": {\r\n        \"version\": \"KqlItem/1.0\",\r\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), Operation = tostring(event.Operation)\\n| where Succeeded\\n| summarize ['Cumulative ghost observations'] = sum(GhostedCount), ['Scans with ghosts'] = countif(GhostedCount > 0), ['Registry paths removed'] = sum(RemovedCount), ['Removal jobs'] = countif(Operation == 'Remove') by VmResourceId\\n| order by ['Cumulative ghost observations'] desc, ['Scans with ghosts'] desc\\n| project VM = VmResourceId, ['Cumulative ghosts'] = ['Cumulative ghost observations'], ['Scans with ghosts'] = ['Scans with ghosts'], ['Paths removed'] = ['Registry paths removed'], ['Removal jobs'] = ['Removal jobs']\",\r\n        \"size\": 0,\r\n        \"queryType\": 0,\r\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\r\n        \"visualization\": \"table\",\r\n        \"gridSettings\": { \"filter\": true }\r\n      },\r\n      \"name\": \"cumulative-offenders\"\r\n    },\r\n    {\r\n      \"type\": 3,\r\n      \"content\": {\r\n        \"version\": \"KqlItem/1.0\",\r\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), RemovedCount = toint(event.RemovedCount)\\n| where Succeeded and Operation == 'Remove'\\n| summarize ['Registry paths removed'] = sum(RemovedCount) by bin(TimeGenerated, 7d)\\n| render timechart\",\r\n        \"size\": 0,\r\n        \"queryType\": 0,\r\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\r\n        \"visualization\": \"timechart\",\r\n        \"chartSettings\": { \"yAxisSettings\": { \"showLegend\": true } }\r\n      },\r\n      \"name\": \"removal-trend\"\r\n    }\r\n  ],\r\n  \"isLocked\": false\r\n}\r\n",
-    "resolvedAutomationAccountName": "[if(empty(parameters('automationAccountName')), toLower(format('aa-ghostnic-{0}', take(uniqueString(resourceGroup().id, deployment().name), 10))), parameters('automationAccountName'))]",
+    "resolvedAutomationAccountName": "[toLower(format('aa-ghostnic-{0}', take(uniqueString(resourceGroup().id, deployment().name), 10)))]",
     "runbookName": "Invoke-GhostNicMaintenance",
+    "versionedRunbookUri": "[replace(parameters('runbookScriptUri'), '/main/', format('/{0}/', parameters('runbookCacheBust')))]",
     "tags": {
       "managedBy": "vanRoojen LLC",
       "workload": "ghost-nic-hunter",
       "repository": "https://github.com/vanRoojen-LLC/ghostNIChunter",
       "sourceRevision": "[parameters('runbookCacheBust')]"
-    }
+    },
+    "resolvedWorkspaceName": "[format('law-ghostnic-{0}', take(uniqueString(resourceGroup().id, variables('resolvedAutomationAccountName')), 12))]",
+    "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('resolvedWorkspaceName'))]"
   },
   "resources": [
     {
@@ -113,6 +102,19 @@
       ]
     },
     {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('resolvedWorkspaceName')]",
+      "location": "[resourceGroup().location]",
+      "tags": "[union(variables('tags'), createObject('component', 'log-analytics'))]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
       "type": "Microsoft.Automation/automationAccounts/runbooks",
       "apiVersion": "2023-11-01",
       "name": "[format('{0}/{1}', variables('resolvedAutomationAccountName'), variables('runbookName'))]",
@@ -124,7 +126,7 @@
         "logProgress": true,
         "logVerbose": true,
         "publishContentLink": {
-          "uri": "[format('{0}?v={1}', parameters('runbookScriptUri'), parameters('runbookCacheBust'))]",
+          "uri": "[variables('versionedRunbookUri')]",
           "version": "1.0.0.0"
         }
       },
@@ -135,13 +137,12 @@
       ]
     },
     {
-      "condition": "[not(empty(parameters('logAnalyticsWorkspaceResourceId')))]",
       "type": "Microsoft.Insights/diagnosticSettings",
       "apiVersion": "2021-05-01-preview",
       "scope": "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]",
       "name": "ghostnic-to-log-analytics",
       "properties": {
-        "workspaceId": "[parameters('logAnalyticsWorkspaceResourceId')]",
+        "workspaceId": "[variables('workspaceId')]",
         "logs": [
           {
             "category": "JobLogs",
@@ -155,14 +156,14 @@
         "metrics": []
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]"
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('resolvedWorkspaceName'))]"
       ]
     },
     {
-      "condition": "[not(empty(parameters('logAnalyticsWorkspaceResourceId')))]",
       "type": "Microsoft.Insights/workbooks",
       "apiVersion": "2023-06-01",
-      "name": "[guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', parameters('logAnalyticsWorkspaceResourceId'))]",
+      "name": "[guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', variables('workspaceId'))]",
       "location": "[resourceGroup().location]",
       "kind": "shared",
       "tags": "[union(variables('tags'), createObject('component', 'workbook'))]",
@@ -170,9 +171,12 @@
         "displayName": "Ghost NIC Hunter dashboard",
         "serializedData": "[variables('$fxv#0')]",
         "category": "workbook",
-        "sourceId": "[parameters('logAnalyticsWorkspaceResourceId')]",
+        "sourceId": "[variables('workspaceId')]",
         "version": "1.0"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('resolvedWorkspaceName'))]"
+      ]
     },
     {
       "copy": {
@@ -255,6 +259,14 @@
     "targetResourceGroupIds": {
       "type": "array",
       "value": "[parameters('targetResourceGroupIds')]"
+    },
+    "workspaceId": {
+      "type": "string",
+      "value": "[variables('workspaceId')]"
+    },
+    "workbookId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Insights/workbooks', guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', variables('workspaceId')))]"
     }
   }
 }

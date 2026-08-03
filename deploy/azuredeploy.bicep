@@ -1,22 +1,17 @@
 targetScope = 'resourceGroup'
 
-@description('Automation Account name. Leave blank to generate a unique name in the selected resource group.')
-param automationAccountName string = ''
-
 @description('Full resource IDs of the target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
 param targetResourceGroupIds array
-
-@description('Optional full resource ID of an existing Log Analytics workspace. Enables history collection and the workbook.')
-param logAnalyticsWorkspaceResourceId string = ''
 
 @description('Public URI of the runbook source. Leave the default unless deploying a reviewed fork or pinned revision.')
 param runbookScriptUri string = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance.ps1'
 
-@description('Cache-busting revision or build identifier appended to the runbook source URI.')
-param runbookCacheBust string = utcNow('yyyyMMddHHmmss')
+@description('Git branch or commit revision used in the published runbook URL. Change this when deploying a new revision.')
+param runbookCacheBust string = 'main'
 
-var resolvedAutomationAccountName = empty(automationAccountName) ? toLower('aa-ghostnic-${take(uniqueString(resourceGroup().id, deployment().name), 10)}') : automationAccountName
+var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(resourceGroup().id, deployment().name), 10)}')
 var runbookName = 'Invoke-GhostNicMaintenance'
+var versionedRunbookUri = replace(runbookScriptUri, '/main/', '/${runbookCacheBust}/')
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
@@ -70,6 +65,18 @@ resource configuredTargets 'Microsoft.Automation/automationAccounts/variables@20
   }
 }
 
+var resolvedWorkspaceName = 'law-ghostnic-${take(uniqueString(resourceGroup().id, resolvedAutomationAccountName), 12)}'
+resource generatedWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
+  name: resolvedWorkspaceName
+  location: resourceGroup().location
+  tags: union(tags, { component: 'log-analytics' })
+  properties: {
+    sku: { name: 'PerGB2018' }
+    retentionInDays: 30
+  }
+}
+var workspaceId = generatedWorkspace.id
+
 resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = {
   parent: automationAccount
   name: runbookName
@@ -85,7 +92,7 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
     logProgress: true
     logVerbose: true
     publishContentLink: {
-      uri: '${runbookScriptUri}?v=${runbookCacheBust}'
+      uri: versionedRunbookUri
       version: '1.0.0.0'
     }
   }
@@ -100,11 +107,11 @@ module targetResourceGroupRoles 'target-resource-group-role.bicep' = [for target
   }
 }]
 
-resource automationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceResourceId)) {
+resource automationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   scope: automationAccount
   name: 'ghostnic-to-log-analytics'
   properties: {
-    workspaceId: logAnalyticsWorkspaceResourceId
+    workspaceId: workspaceId
     logs: [
       {
         category: 'JobLogs'
@@ -119,8 +126,8 @@ resource automationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01
   }
 }
 
-resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnalyticsWorkspaceResourceId)) {
-  name: guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', logAnalyticsWorkspaceResourceId)
+resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = {
+  name: guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', workspaceId)
   location: resourceGroup().location
   kind: 'shared'
   tags: union(tags, { component: 'workbook' })
@@ -128,7 +135,7 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnal
     displayName: 'Ghost NIC Hunter dashboard'
     serializedData: loadTextContent('../workbooks/ghostnic-dashboard.json')
     category: 'workbook'
-    sourceId: logAnalyticsWorkspaceResourceId
+    sourceId: workspaceId
     version: '1.0'
   }
 }
@@ -136,3 +143,5 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnal
 output automationAccountName string = resolvedAutomationAccountName
 output runbookName string = runbookName
 output targetResourceGroupIds array = targetResourceGroupIds
+output workspaceId string = workspaceId
+output workbookId string = workbook.id

@@ -18,9 +18,9 @@ Microsoft describes this as a design behavior of Accelerated Networking after de
 
 ### Deploy to Azure portal wizard
 
-Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, then collect the first target Windows VM resource ID and, optionally, an existing Log Analytics workspace resource ID. The wizard creates the Automation account, imports the runbook, stores that VM as the default target, and grants its managed identity **Virtual Machine Contributor on that VM only**.
+Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, and enter the target resource-group IDs. The wizard automatically generates the Automation account and a dedicated Log Analytics workspace, imports the runbook, deploys the workbook, and grants its managed identity **Virtual Machine Contributor** on each selected target group.
 
-The deploying identity needs permission to create the Automation account in the selected resource group and `Microsoft.Authorization/roleAssignments/write` on the target VM. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
+The deploying identity needs permission to create the Automation account, workspace, workbook, and resource-group role assignments. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
 
 For another VM, add its resource ID to the `GhostNicTargetVmResourceIds` Automation variable and grant the Automation identity the same VM-scoped role on that VM. Do not grant subscription-wide authority merely for convenience.
 
