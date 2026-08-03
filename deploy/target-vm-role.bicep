@@ -9,7 +9,7 @@ param targetVmResourceId string
 @description('System-assigned managed identity principal ID for the Automation account.')
 param automationPrincipalId string
 
-var virtualMachineContributorRoleDefinitionId = '9980e02c-c2be-4d73-94e8-173b1dc7c0c3'
+var virtualMachineContributorRoleDefinitionId = '9980e02c-c2be-4d73-94e8-173b1dc7cf3c'
 
 resource targetVm 'Microsoft.Compute/virtualMachines@2024-03-01' existing = {
   name: targetVmName

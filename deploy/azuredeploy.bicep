@@ -3,7 +3,7 @@ targetScope = 'resourceGroup'
 @description('Comma-separated full resource IDs of target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
 param targetResourceGroupIds string
 
-var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(resourceGroup().id, deployment().name), 10)}')
+var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(subscription().id, resourceGroup().id, 'ghostnic'), 10)}')
 var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
 var runbookName = 'Invoke-GhostNicMaintenance'
 var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803.ps1'
@@ -56,7 +56,7 @@ resource configuredTargets 'Microsoft.Automation/automationAccounts/variables@20
   properties: {
     description: 'One or more target resource-group IDs, separated by commas, semicolons, or new lines.'
     isEncrypted: false
-    value: join(resolvedTargetResourceGroupIds, '\n')
+    value: '"${join(resolvedTargetResourceGroupIds, '\n')}"'
   }
 }
 

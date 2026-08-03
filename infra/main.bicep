@@ -44,7 +44,7 @@ resource targetResourceGroups 'Microsoft.Automation/automationAccounts/variables
   properties: {
     description: 'Target resource-group IDs, one per line.'
     isEncrypted: false
-    value: join(targetResourceGroupIds, '\n')
+    value: '"${join(targetResourceGroupIds, '\n')}"'
   }
 }
 
