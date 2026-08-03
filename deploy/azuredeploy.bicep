@@ -3,21 +3,15 @@ targetScope = 'resourceGroup'
 @description('Comma-separated full resource IDs of target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
 param targetResourceGroupIds string
 
-@description('Public URI of the runbook source. Leave the default unless deploying a reviewed fork or pinned revision.')
-param runbookScriptUri string = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance.ps1'
-
-@description('Git branch or commit revision used in the published runbook URL. Change this when deploying a new revision.')
-param runbookCacheBust string = 'main'
-
 var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(resourceGroup().id, deployment().name), 10)}')
 var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
 var runbookName = 'Invoke-GhostNicMaintenance'
-var versionedRunbookUri = replace(runbookScriptUri, '/main/', '/${runbookCacheBust}/')
+var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: runbookCacheBust
+  sourceRevision: '20260803'
 }
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2023-11-01' = {
