@@ -12,6 +12,9 @@ param logAnalyticsWorkspaceResourceId string = ''
 @description('Public URI of the runbook source. Leave the default unless deploying a reviewed fork or pinned revision.')
 param runbookScriptUri string = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance.ps1'
 
+@description('Cache-busting revision or build identifier appended to the runbook source URI.')
+param runbookCacheBust string = utcNow('yyyyMMddHHmmss')
+
 var resolvedAutomationAccountName = empty(automationAccountName) ? toLower('aa-ghostnic-${take(uniqueString(resourceGroup().id, deployment().name), 10)}') : automationAccountName
 var targetVmResourceIdParts = split(targetVmResourceId, '/')
 var targetSubscriptionId = targetVmResourceIdParts[2]
@@ -22,6 +25,7 @@ var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
+  sourceRevision: runbookCacheBust
 }
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2023-11-01' = {
@@ -85,7 +89,7 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
     logProgress: true
     logVerbose: true
     publishContentLink: {
-      uri: runbookScriptUri
+      uri: '${runbookScriptUri}?v=${runbookCacheBust}'
       version: '1.0.0.0'
     }
   }

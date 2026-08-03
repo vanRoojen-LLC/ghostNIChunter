@@ -14,6 +14,9 @@ param(
     [ValidateNotNullOrEmpty()]
     [string[]]$TargetVmResourceIds,
 
+    [ValidateNotNullOrEmpty()]
+    [string[]]$TargetResourceGroupIds,
+
     [ValidateSet('Detect', 'Remove')]
     [string]$Operation = 'Detect',
 
@@ -29,26 +32,62 @@ if ($Operation -eq 'Remove' -and -not $ConfirmRemoval) {
 
 if (-not $TargetVmResourceIds -or $TargetVmResourceIds.Count -eq 0) {
     $configuredTargets = Get-AutomationVariable -Name 'GhostNicTargetVmResourceIds' -ErrorAction SilentlyContinue
-    if ([string]::IsNullOrWhiteSpace($configuredTargets)) {
-        throw 'No targets were supplied. Pass TargetVmResourceIds or configure the GhostNicTargetVmResourceIds Automation variable.'
+    if (-not [string]::IsNullOrWhiteSpace($configuredTargets)) {
+        $TargetVmResourceIds = @($configuredTargets -split '[,;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+}
+
+if (-not $TargetResourceGroupIds -or $TargetResourceGroupIds.Count -eq 0) {
+    $configuredGroups = Get-AutomationVariable -Name 'GhostNicTargetResourceGroupIds' -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace($configuredGroups)) {
+        $TargetResourceGroupIds = @($configuredGroups -split '[,;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+}
+
+$excludedForRemoval = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+    $subscriptionSource = if ($TargetVmResourceIds) { $TargetVmResourceIds[0] } elseif ($TargetResourceGroupIds) { $TargetResourceGroupIds[0] } else { '' }
+    $firstTargetSubscriptionMatch = [regex]::Match($subscriptionSource, '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if (-not $firstTargetSubscriptionMatch.Success) { throw "Cannot infer SubscriptionId from target: $subscriptionSource" }
+    $SubscriptionId = $firstTargetSubscriptionMatch.Groups['subscriptionId'].Value
+}
+Connect-AzAccount -Identity | Out-Null
+Set-AzContext -SubscriptionId $SubscriptionId | Out-Null
+
+if (-not $TargetVmResourceIds -or $TargetVmResourceIds.Count -eq 0) {
+    if (-not $TargetResourceGroupIds -or $TargetResourceGroupIds.Count -eq 0) {
+        throw 'No targets were supplied. Pass TargetVmResourceIds, TargetResourceGroupIds, or configure target Automation variables.'
     }
     $TargetVmResourceIds = @(
-        $configuredTargets -split '[,;\r\n]+' |
-            ForEach-Object { $_.Trim() } |
-            Where-Object { $_ }
+        foreach ($groupId in $TargetResourceGroupIds) {
+            $groupMatch = [regex]::Match($groupId, '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/resourceGroups/(?<resourceGroup>[^/]+)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if (-not $groupMatch.Success) { throw "Target is not a full Azure resource-group ID: $groupId" }
+            foreach ($vm in @(Get-AzVM -ResourceGroupName $groupMatch.Groups['resourceGroup'].Value -ErrorAction Stop)) {
+                if ($vm.StorageProfile.OsDisk.OsType -ne 'Windows') { continue }
+                $exclusion = if ($vm.Tags) { [string]$vm.Tags['ghostNicHunterExclusions'] } else { '' }
+                $values = @($exclusion -split '[,;]+' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+                if ($values -contains 'scan' -or $values -contains 'all') { continue }
+                if ($Operation -eq 'Remove' -and ($values -contains 'remove' -or $values -contains 'all')) { [void]$excludedForRemoval.Add($vm.Id) }
+                $vm.Id
+            }
+        }
     )
 }
 
-if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
-    $firstTargetSubscriptionMatch = [regex]::Match($TargetVmResourceIds[0], '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    if (-not $firstTargetSubscriptionMatch.Success) {
-        throw "Cannot infer SubscriptionId from target: $($TargetVmResourceIds[0])"
+$eligibleVmResourceIds = [System.Collections.Generic.List[string]]::new()
+foreach ($vmResourceId in @($TargetVmResourceIds | Select-Object -Unique)) {
+    $vm = Get-AzVM -ResourceId $vmResourceId -ErrorAction Stop
+    $exclusion = if ($vm.Tags) { [string]$vm.Tags['ghostNicHunterExclusions'] } else { '' }
+    $values = @($exclusion -split '[,;]+' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+    if ($values -contains 'scan' -or $values -contains 'all') {
+        [pscustomobject]@{ SchemaVersion = '1.0'; VmResourceId = $vmResourceId; Succeeded = $true; Outcome = 'Excluded'; ExclusionType = 'scan'; Operation = $Operation; CommandIssued = $false } |
+            ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
+        continue
     }
-    $SubscriptionId = $firstTargetSubscriptionMatch.Groups['subscriptionId'].Value
+    if ($Operation -eq 'Remove' -and ($values -contains 'remove' -or $values -contains 'all')) { [void]$excludedForRemoval.Add($vmResourceId) }
+    [void]$eligibleVmResourceIds.Add($vmResourceId)
 }
-
-Connect-AzAccount -Identity | Out-Null
-Set-AzContext -SubscriptionId $SubscriptionId | Out-Null
+$TargetVmResourceIds = @($eligibleVmResourceIds)
 
 $guestScript = @'
 param(
@@ -133,6 +172,11 @@ if ($Operation -eq 'Remove' -and $ghosted.Count -gt 0) {
 
 $vmIdPattern = '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/resourceGroups/(?<resourceGroup>[^/]+)/providers/Microsoft\.Compute/virtualMachines/(?<vmName>[^/]+)$'
 foreach ($vmResourceId in $TargetVmResourceIds) {
+    if ($excludedForRemoval.Contains($vmResourceId)) {
+        [pscustomobject]@{ SchemaVersion = '1.0'; VmResourceId = $vmResourceId; Succeeded = $true; Outcome = 'Excluded'; ExclusionType = 'remove'; Operation = $Operation; CommandIssued = $false } |
+            ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
+        continue
+    }
     $match = [regex]::Match($vmResourceId, $vmIdPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     if (-not $match.Success) {
         throw "Target is not a full Azure VM resource ID: $vmResourceId"
