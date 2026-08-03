@@ -1,0 +1,76 @@
+name: Deploy Ghost NIC Hunter
+
+on:
+  workflow_dispatch:
+    inputs:
+      subscription_id:
+        description: Azure subscription ID that owns the Automation account
+        required: true
+        type: string
+      resource_group_name:
+        description: Resource group for the Automation account (created if missing)
+        required: true
+        type: string
+      location:
+        description: Azure region for the Automation account
+        required: true
+        default: westus3
+        type: string
+      automation_account_name:
+        description: Globally unique Azure Automation account name
+        required: true
+        default: vr-ghostnic-prod
+        type: string
+      target_scope:
+        description: Optional VM or resource-group scope granted Virtual Machine Contributor
+        required: false
+        type: string
+      log_analytics_workspace_resource_id:
+        description: Optional existing workspace resource ID; enables the workbook and historical data
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy Azure Automation utility
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SUBSCRIPTION_ID: ${{ inputs.subscription_id }}
+      RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
+      LOCATION: ${{ inputs.location }}
+      AUTOMATION_ACCOUNT_NAME: ${{ inputs.automation_account_name }}
+      TARGET_SCOPE: ${{ inputs.target_scope }}
+      LOG_ANALYTICS_WORKSPACE_RESOURCE_ID: ${{ inputs.log_analytics_workspace_resource_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ inputs.subscription_id }}
+
+      - name: Deploy Automation account, runbook, diagnostics, and workbook
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            $parameters = @{
+              SubscriptionId         = $env:SUBSCRIPTION_ID
+              ResourceGroupName      = $env:RESOURCE_GROUP_NAME
+              Location               = $env:LOCATION
+              AutomationAccountName  = $env:AUTOMATION_ACCOUNT_NAME
+            }
+            if (-not [string]::IsNullOrWhiteSpace($env:TARGET_SCOPE)) {
+              $parameters.TargetScope = $env:TARGET_SCOPE
+            }
+            if (-not [string]::IsNullOrWhiteSpace($env:LOG_ANALYTICS_WORKSPACE_RESOURCE_ID)) {
+              $parameters.LogAnalyticsWorkspaceResourceId = $env:LOG_ANALYTICS_WORKSPACE_RESOURCE_ID
+            }
+            ./deploy/Deploy-GhostNicHunter.ps1 @parameters

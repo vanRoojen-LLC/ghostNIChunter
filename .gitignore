@@ -1,0 +1,7 @@
+# Azure and PowerShell local state
+.azure/
+*.log
+
+# Editor and operating system files
+.DS_Store
+.vscode/

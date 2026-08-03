@@ -1,0 +1,88 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Ghost NIC Hunter\n\n**Operational state from Azure Automation JobStreams.** Current values are the newest successful scan for each VM; historical values retain every recorded scan, including VMs that have since been cleaned. Data normally arrives a few minutes after the Automation job completes."
+      },
+      "name": "title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let latest = AzureDiagnostics\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\n| where Succeeded\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId;\nlatest\n| summarize ['Current ghost NICs'] = sum(GhostedCount), ['VMs with ghosts'] = countif(GhostedCount > 0), ['VMs scanned'] = count()",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": { "showBorder": false, "size": "small" }
+      },
+      "name": "current-summary"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AzureDiagnostics\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount)\n| where Succeeded and Operation == 'Remove'\n| summarize ['Removal jobs'] = count(), ['Ghost NICs presented for removal'] = sum(GhostedCount), ['Registry paths removed'] = sum(RemovedCount), ['VMs remediated'] = dcount(VmResourceId)",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": { "showBorder": false, "size": "small" }
+      },
+      "name": "removal-summary"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Current top offenders\n\nThe latest successful scan is authoritative for present work. Run a detection job before deciding to remove anything." },
+      "name": "current-heading"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AzureDiagnostics\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), ValidCount = toint(event.ValidCount), LastScanUtc = todatetime(event.DetectedAtUtc)\n| where Succeeded\n| summarize arg_max(TimeGenerated, GhostedCount, ValidCount, LastScanUtc) by VmResourceId\n| where GhostedCount > 0\n| order by GhostedCount desc, LastScanUtc asc\n| project VM = VmResourceId, ['Ghost NICs now'] = GhostedCount, ['Valid NICs'] = ValidCount, ['Last scan UTC'] = LastScanUtc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": { "filter": true }
+      },
+      "name": "current-top-offenders"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Cumulative offenders and utility efficacy\n\nCumulative observations are intentional: repeated ghost NIC findings on the same VM are a recurrence signal, including for VMs that have since been cleaned." },
+      "name": "history-heading"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AzureDiagnostics\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), Operation = tostring(event.Operation)\n| where Succeeded\n| summarize ['Cumulative ghost observations'] = sum(GhostedCount), ['Scans with ghosts'] = countif(GhostedCount > 0), ['Registry paths removed'] = sum(RemovedCount), ['Removal jobs'] = countif(Operation == 'Remove') by VmResourceId\n| order by ['Cumulative ghost observations'] desc, ['Scans with ghosts'] desc\n| project VM = VmResourceId, ['Cumulative ghosts'] = ['Cumulative ghost observations'], ['Scans with ghosts'] = ['Scans with ghosts'], ['Paths removed'] = ['Registry paths removed'], ['Removal jobs'] = ['Removal jobs']",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": { "filter": true }
+      },
+      "name": "cumulative-offenders"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AzureDiagnostics\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), RemovedCount = toint(event.RemovedCount)\n| where Succeeded and Operation == 'Remove'\n| summarize ['Registry paths removed'] = sum(RemovedCount) by bin(TimeGenerated, 7d)\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "timechart",
+        "chartSettings": { "yAxisSettings": { "showLegend": true } }
+      },
+      "name": "removal-trend"
+    }
+  ],
+  "isLocked": false
+}
