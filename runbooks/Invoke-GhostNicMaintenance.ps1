@@ -20,7 +20,10 @@ param(
     [ValidateSet('Detect', 'Remove')]
     [string]$Operation = 'Detect',
 
-    [bool]$ConfirmRemoval = $false
+    [bool]$ConfirmRemoval = $false,
+
+    [ValidateRange(1, 10000)]
+    [int]$MaximumCandidateCount = 1000
 )
 
 Set-StrictMode -Version Latest
@@ -94,7 +97,8 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('Detect', 'Remove')]
     [string]$Operation,
-    [bool]$ConfirmRemoval
+    [bool]$ConfirmRemoval,
+    [int]$MaximumCandidateCount = 1000
 )
 
 Set-StrictMode -Version Latest
@@ -104,7 +108,10 @@ if ($Operation -eq 'Remove' -and -not $ConfirmRemoval) {
     throw 'Removal confirmation was not supplied.'
 }
 
-$activePnpIds = @(Get-NetAdapter -ErrorAction Stop | ForEach-Object PnpDeviceID | Where-Object { $_ })
+$normalize = { param([string]$Id) if ($Id) { $Id.Trim().ToUpperInvariant() } }
+$activePnpIds = @(Get-NetAdapter -ErrorAction Stop | ForEach-Object PnpDeviceID | ForEach-Object $normalize | Where-Object { $_ })
+if ($activePnpIds.Count -eq 0) { throw 'SafetyAbort: no active network adapter PnP IDs were observed.' }
+$presentPnpIds = @(Get-PnpDevice -Class Net -PresentOnly -ErrorAction Stop | ForEach-Object InstanceId | ForEach-Object $normalize | Where-Object { $_ })
 $ghosted = [System.Collections.Generic.List[object]]::new()
 $valid = [System.Collections.Generic.List[object]]::new()
 
@@ -130,6 +137,7 @@ function Get-NicRegistryEntries {
                 PnpDeviceId  = $deviceKey.Name.Replace('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\', '')
                 Service      = $properties.Service
                 Description  = $description
+                ClassGuid    = [string]$properties.ClassGuid
             }
         }
     }
@@ -137,37 +145,59 @@ function Get-NicRegistryEntries {
 
 foreach ($bus in @('PCI', 'VMBUS')) {
     foreach ($entry in @(Get-NicRegistryEntries -BusName $bus)) {
-        if ($activePnpIds -contains $entry.PnpDeviceId) {
+        $normalizedId = & $normalize $entry.PnpDeviceId
+        if ($entry.ClassGuid -ne '{4d36e972-e325-11ce-bfc1-08002be10318}' -or $activePnpIds -contains $normalizedId -or $presentPnpIds -contains $normalizedId) {
             $valid.Add($entry)
         } else {
-            $ghosted.Add($entry)
+            $pnp = Get-PnpDevice -InstanceId $entry.PnpDeviceId -ErrorAction SilentlyContinue
+            $ghosted.Add([pscustomobject]@{ Entry = $entry; Pnp = $pnp; PnpDeviceId = $entry.PnpDeviceId; ProblemCode = if ($pnp) { [int]$pnp.ConfigManagerErrorCode } else { $null } })
         }
     }
 }
 
-$removedPaths = [System.Collections.Generic.List[string]]::new()
-if ($Operation -eq 'Remove' -and $ghosted.Count -gt 0) {
+$outcome = if ($ghosted.Count -eq 0) { 'Clean' } else { 'Detected' }
+$exitCode = if ($ghosted.Count -eq 0) { 0 } else { 2 }
+$deviceResults = [System.Collections.Generic.List[object]]::new()
+$pnpCleanExitCode = $null
+if ($ghosted.Count -gt $MaximumCandidateCount) {
+    $outcome = 'SafetyAbort'; $exitCode = 4
+} elseif ($Operation -eq 'Remove' -and $ghosted.Count -gt 0) {
     & "$env:WINDIR\System32\rundll32.exe" "$env:WINDIR\System32\pnpclean.dll,RunDLL_PnpClean" '/Devices' '/Maxclean'
+    $pnpCleanExitCode = $LASTEXITCODE
     Start-Sleep -Seconds 10
-
-    foreach ($entry in $ghosted) {
-        if (Test-Path -LiteralPath $entry.RegistryPath) {
-            Remove-Item -LiteralPath $entry.RegistryPath -Recurse -Force -ErrorAction Stop
-            $removedPaths.Add($entry.RegistryPath)
+    foreach ($candidate in $ghosted) {
+        $method = 'PnpClean'; $nativeExitCode = $pnpCleanExitCode; $finalState = 'Present'
+        if (Get-PnpDevice -InstanceId $candidate.PnpDeviceId -ErrorAction SilentlyContinue) {
+            if ($candidate.ProblemCode -eq 45) {
+                $method = 'pnputil'
+                & "$env:WINDIR\System32\pnputil.exe" /remove-device $candidate.PnpDeviceId | Out-Null
+                $nativeExitCode = $LASTEXITCODE
+            } else { $method = 'Ambiguous'; $nativeExitCode = 4 }
         }
+        if (-not (Get-PnpDevice -InstanceId $candidate.PnpDeviceId -ErrorAction SilentlyContinue)) { $finalState = 'Removed' }
+        $deviceResults.Add([pscustomobject]@{ PnpDeviceId=$candidate.PnpDeviceId; Service=$candidate.Entry.Service; FriendlyName=$candidate.Entry.Description; ProblemCode=$candidate.ProblemCode; Method=$method; NativeExitCode=$nativeExitCode; FinalState=$finalState })
     }
+    $remaining = @($deviceResults | Where-Object FinalState -ne 'Removed')
+    $finalActive = @(Get-NetAdapter -ErrorAction Stop | ForEach-Object PnpDeviceID | ForEach-Object $normalize | Where-Object { $_ })
+    if (($activePnpIds | Sort-Object) -join ',' -ne ($finalActive | Sort-Object) -join ',') { $outcome = 'SafetyAbort'; $exitCode = 4 }
+    elseif ($remaining.Count -gt 0) { $outcome = 'PartialFailure'; $exitCode = 3 }
+    else { $outcome = 'Remediated'; $exitCode = 0 }
 }
 
 [pscustomobject]@{
+    SchemaVersion   = '2.0'
     Operation       = $Operation
     ComputerName    = $env:COMPUTERNAME
     DetectedAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
+    Outcome         = $outcome
+    ExitCode        = $exitCode
     GhostedCount    = $ghosted.Count
     ValidCount      = $valid.Count
-    GhostedNic      = @($ghosted)
-    RemovedPaths    = @($removedPaths)
-    RestartRequired = ($removedPaths.Count -gt 0)
-} | ConvertTo-Json -Depth 6 -Compress | ForEach-Object { "GHNIC_GUEST_RESULT:$PSItem" }
+    GhostedNic      = @($ghosted | ForEach-Object Entry)
+    DeviceResults   = @($deviceResults)
+    RestartRequired = $false
+    PnpCleanExitCode = $pnpCleanExitCode
+} | ConvertTo-Json -Depth 8 -Compress | ForEach-Object { "GHNIC_GUEST_RESULT:$PSItem" }
 '@
 
 $vmIdPattern = '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/resourceGroups/(?<resourceGroup>[^/]+)/providers/Microsoft\.Compute/virtualMachines/(?<vmName>[^/]+)$'
@@ -191,7 +221,7 @@ foreach ($vmResourceId in $TargetVmResourceIds) {
             -Name $match.Groups['vmName'].Value `
             -CommandId 'RunPowerShellScript' `
             -ScriptString $guestScript `
-            -Parameter @{ Operation = $Operation; ConfirmRemoval = $ConfirmRemoval } `
+            -Parameter @{ Operation = $Operation; ConfirmRemoval = $ConfirmRemoval; MaximumCandidateCount = $MaximumCandidateCount } `
             -ErrorAction Stop
 
         $guestMessage = (@($result.Value | ForEach-Object Message) -join "`n")
@@ -203,13 +233,15 @@ foreach ($vmResourceId in $TargetVmResourceIds) {
         [pscustomobject]@{
             SchemaVersion = '1.0'
             VmResourceId = $vmResourceId
-            Succeeded    = $true
+            Succeeded    = ([int]$guestResult.ExitCode -eq 0)
             Operation    = $Operation
             DetectedAtUtc = $guestResult.DetectedAtUtc
             GhostedCount = [int]$guestResult.GhostedCount
             ValidCount = [int]$guestResult.ValidCount
-            RemovedCount = @($guestResult.RemovedPaths).Count
-            RestartRequired = [bool]$guestResult.RestartRequired
+            RemovedCount = @($guestResult.DeviceResults | Where-Object FinalState -eq 'Removed').Count
+            Outcome = [string]$guestResult.Outcome
+            ExitCode = [int]$guestResult.ExitCode
+            RestartRequired = $false
         } | ConvertTo-Json -Depth 5 -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
     } catch {
         [pscustomobject]@{

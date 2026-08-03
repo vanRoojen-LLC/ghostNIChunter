@@ -10,8 +10,11 @@ param tags object = {
   workload: 'ghost-nic-hunter'
 }
 
-@description('Existing Log Analytics workspace resource ID. Leave empty to deploy without history collection or workbook.')
+@description('Existing Log Analytics workspace resource ID. Leave empty to create a dedicated workspace.')
 param logAnalyticsWorkspaceResourceId string = ''
+
+@description('Optional name for the generated Log Analytics workspace.')
+param logAnalyticsWorkspaceName string = ''
 
 @description('Target VM resource-group IDs used by the runbook for discovery.')
 param targetResourceGroupIds array = []
@@ -45,11 +48,27 @@ resource targetResourceGroups 'Microsoft.Automation/automationAccounts/variables
   }
 }
 
-resource automationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceResourceId)) {
+var resolvedWorkspaceName = empty(logAnalyticsWorkspaceName) ? 'law-ghostnic-${take(uniqueString(resourceGroup().id, automationAccount.name), 12)}' : logAnalyticsWorkspaceName
+resource generatedWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = if (empty(logAnalyticsWorkspaceResourceId)) {
+  name: resolvedWorkspaceName
+  location: location
+  tags: union(tags, { component: 'log-analytics' })
+  properties: {
+    sku: { name: 'PerGB2018' }
+    retentionInDays: 30
+  }
+}
+resource existingWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' existing = if (!empty(logAnalyticsWorkspaceResourceId)) {
+  name: split(logAnalyticsWorkspaceResourceId, '/')[8]
+  scope: resourceGroup(split(logAnalyticsWorkspaceResourceId, '/')[2], split(logAnalyticsWorkspaceResourceId, '/')[4])
+}
+var workspaceId = empty(logAnalyticsWorkspaceResourceId) ? generatedWorkspace.id : existingWorkspace.id
+
+resource automationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   scope: automationAccount
   name: 'ghostnic-to-log-analytics'
   properties: {
-    workspaceId: logAnalyticsWorkspaceResourceId
+    workspaceId: workspaceId
     logs: [
       {
         category: 'JobLogs'
@@ -64,8 +83,8 @@ resource automationDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01
   }
 }
 
-resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnalyticsWorkspaceResourceId)) {
-  name: guid(resourceGroup().id, workbookDisplayName, logAnalyticsWorkspaceResourceId)
+resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = {
+  name: guid(resourceGroup().id, workbookDisplayName, workspaceId)
   location: resourceGroup().location
   kind: 'shared'
   tags: union(tags, { component: 'workbook' })
@@ -73,11 +92,12 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnal
     displayName: workbookDisplayName
     serializedData: loadTextContent('../workbooks/ghostnic-dashboard.json')
     category: 'workbook'
-    sourceId: logAnalyticsWorkspaceResourceId
+    sourceId: workspaceId
     version: '1.0'
   }
 }
 
 output automationAccountId string = automationAccount.id
 output principalId string = automationAccount.identity.principalId
-output workbookId string = empty(logAnalyticsWorkspaceResourceId) ? '' : workbook.id
+output workspaceId string = workspaceId
+output workbookId string = workbook.id

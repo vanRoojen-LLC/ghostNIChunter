@@ -24,7 +24,7 @@ The deploying identity needs permission to create the Automation account in the 
 
 For another VM, add its resource ID to the `GhostNicTargetVmResourceIds` Automation variable and grant the Automation identity the same VM-scoped role on that VM. Do not grant subscription-wide authority merely for convenience.
 
-### CLI or GitHub Actions deployment
+### CLI deployment
 
 Prerequisites: PowerShell 7+, Azure PowerShell modules (`Az.Accounts`, `Az.Resources`, `Az.Automation`), Azure CLI with Bicep available, and an Azure identity permitted to create the Automation account. To grant the runbook identity access, the deployer also needs `Microsoft.Authorization/roleAssignments/write` at each selected scope.
 
@@ -44,18 +44,9 @@ Connect-AzAccount
 
 `TargetResourceGroupIds` grants the Automation identity **Virtual Machine Contributor** separately at each selected resource-group scope, which is the minimum built-in role that includes `Microsoft.Compute/virtualMachines/runCommand/write`. The runbook discovers Windows VMs in those groups and honors the `ghostNicHunterExclusions` VM tag (`scan`, `remove`, or `scan,remove`).
 
-### GitHub Actions alternative
+The Bicep deployment creates only the Automation account and its managed identity. The script imports and publishes the runbook, then grants the identity its selected resource-group scopes.
 
-The repository also includes **Actions → Deploy Ghost NIC Hunter → Run workflow** for repeatable CI-style deployments. Before its first use, configure these repository Actions variables for an Azure app registration with a federated credential for this repository/environment:
-
-- `AZURE_CLIENT_ID`
-- `AZURE_TENANT_ID`
-
-Give that application permission to deploy the Automation account and, if you use `target_scope`, `Microsoft.Authorization/roleAssignments/write` at that exact scope. The workflow has no long-lived Azure secret. Enter the subscription, Automation account resource group, and optional monitoring workspace ID in the Run workflow form.
-
-The Bicep deployment creates only the Automation account and its managed identity. The script imports/publishes the runbook and optionally grants that identity its target scope role; Azure Automation runbook content is therefore not coupled to a public content URL.
-
-Supplying `LogAnalyticsWorkspaceResourceId` additionally configures Automation `JobLogs` and `JobStreams` diagnostics and deploys the **Ghost NIC Hunter dashboard** workbook to that workspace. This is required for historical reporting; it does not create a workspace or change workspace retention.
+Supplying `LogAnalyticsWorkspaceResourceId` uses an existing workspace. If omitted, the deployment creates a tagged 30-day Log Analytics workspace, configures Automation `JobLogs` and `JobStreams`, and deploys the **Ghost NIC Hunter dashboard** workbook automatically.
 
 ## Start a job
 

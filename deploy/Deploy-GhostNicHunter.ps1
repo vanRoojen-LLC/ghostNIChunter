@@ -117,6 +117,6 @@ foreach ($targetResourceGroupId in $targetResourceGroupIds) {
     ManagedIdentityId   = $automationAccount.Identity.PrincipalId
     Runbook             = $runbookName
     TargetResourceGroupIds = $targetResourceGroupIds
-    WorkbookEnabled     = -not [string]::IsNullOrWhiteSpace($LogAnalyticsWorkspaceResourceId)
+    WorkbookEnabled     = $true
     NextStep            = 'Start Invoke-GhostNicMaintenance with Operation=Detect; target VMs will be discovered from the configured resource groups.'
 }
