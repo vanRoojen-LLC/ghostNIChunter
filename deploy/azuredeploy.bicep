@@ -6,12 +6,12 @@ param targetResourceGroupIds string
 var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(subscription().id, resourceGroup().id, 'ghostnic'), 10)}')
 var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
 var runbookName = 'Invoke-GhostNicMaintenance'
-var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803.ps1'
+var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803-3.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: '20260803'
+  sourceRevision: '20260803-3'
 }
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2023-11-01' = {
@@ -60,6 +60,27 @@ resource configuredTargets 'Microsoft.Automation/automationAccounts/variables@20
   }
 }
 
+var runtimeVariableDefinitions = [
+  { name: 'GhostNicOperation', description: 'Default mode: Detect or Remove.', value: '"Detect"' }
+  { name: 'GhostNicConfirmRemoval', description: 'Must be true, together with Operation=Remove, before remediation is allowed.', value: 'false' }
+  { name: 'GhostNicMaximumCandidateCount', description: 'Safety ceiling for confirmed ghost NIC candidates on one VM.', value: '1000' }
+  { name: 'GhostNicExclusionTagName', description: 'VM tag used to exclude scanning or removal.', value: '"ghostNicHunterExclusions"' }
+  { name: 'GhostNicScanExclusionValues', description: 'Comma-separated tag values that prevent scanning.', value: '"scan,all"' }
+  { name: 'GhostNicRemovalExclusionValues', description: 'Comma-separated tag values that prevent removal while allowing detection.', value: '"remove,all"' }
+  { name: 'GhostNicPnpCleanWaitSeconds', description: 'Seconds to wait after PnpClean before pnputil fallback.', value: '10' }
+  { name: 'GhostNicRequireProblemCode45', description: 'Require CM_PROB_PHANTOM code 45 before pnputil removal.', value: 'true' }
+]
+
+resource runtimeVariables 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = [for definition in runtimeVariableDefinitions: {
+  parent: automationAccount
+  name: definition.name
+  properties: {
+    description: definition.description
+    isEncrypted: false
+    value: definition.value
+  }
+}]
+
 var resolvedWorkspaceName = 'law-ghostnic-${take(uniqueString(resourceGroup().id, resolvedAutomationAccountName), 12)}'
 resource generatedWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: resolvedWorkspaceName
@@ -79,6 +100,7 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
   dependsOn: [
     azAccountsModule
     azComputeModule
+    runtimeVariables
   ]
   tags: tags
   properties: {

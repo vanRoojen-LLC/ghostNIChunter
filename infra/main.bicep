@@ -48,6 +48,27 @@ resource targetResourceGroups 'Microsoft.Automation/automationAccounts/variables
   }
 }
 
+var runtimeVariableDefinitions = [
+  { name: 'GhostNicOperation', description: 'Default mode: Detect or Remove.', value: '"Detect"' }
+  { name: 'GhostNicConfirmRemoval', description: 'Must be true, together with Operation=Remove, before remediation is allowed.', value: 'false' }
+  { name: 'GhostNicMaximumCandidateCount', description: 'Safety ceiling for confirmed ghost NIC candidates on one VM.', value: '1000' }
+  { name: 'GhostNicExclusionTagName', description: 'VM tag used to exclude scanning or removal.', value: '"ghostNicHunterExclusions"' }
+  { name: 'GhostNicScanExclusionValues', description: 'Comma-separated tag values that prevent scanning.', value: '"scan,all"' }
+  { name: 'GhostNicRemovalExclusionValues', description: 'Comma-separated tag values that prevent removal while allowing detection.', value: '"remove,all"' }
+  { name: 'GhostNicPnpCleanWaitSeconds', description: 'Seconds to wait after PnpClean before pnputil fallback.', value: '10' }
+  { name: 'GhostNicRequireProblemCode45', description: 'Require CM_PROB_PHANTOM code 45 before pnputil removal.', value: 'true' }
+]
+
+resource runtimeVariables 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = [for definition in runtimeVariableDefinitions: {
+  parent: automationAccount
+  name: definition.name
+  properties: {
+    description: definition.description
+    isEncrypted: false
+    value: definition.value
+  }
+}]
+
 var resolvedWorkspaceName = empty(logAnalyticsWorkspaceName) ? 'law-ghostnic-${take(uniqueString(resourceGroup().id, automationAccount.name), 12)}' : logAnalyticsWorkspaceName
 resource generatedWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = if (empty(logAnalyticsWorkspaceResourceId)) {
   name: resolvedWorkspaceName

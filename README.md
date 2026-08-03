@@ -4,8 +4,8 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with a system-assigned managed identity and publishes one PowerShell runbook: `Invoke-GhostNicMaintenance`. The runbook uses Azure VM Run Command, so it does not require a Hybrid Runbook Worker or credentials stored in Automation.
 
-<a href="https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-2.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazurebutton" alt="Deploy to Azure"></a>
-<a href="https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-2.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazuregovbutton" alt="Deploy to Azure Gov"></a>
+<a href="https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-3.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazurebutton" alt="Deploy to Azure"></a>
+<a href="https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-3.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazuregovbutton" alt="Deploy to Azure Gov"></a>
 
 ## What it does
 
@@ -50,6 +50,23 @@ The Bicep deployment creates only the Automation account and its managed identit
 Supplying `LogAnalyticsWorkspaceResourceId` uses an existing workspace. If omitted, the deployment creates a tagged 30-day Log Analytics workspace, configures Automation `JobLogs` and `JobStreams`, and deploys the **Ghost NIC Hunter dashboard** workbook automatically.
 
 ## Start a job
+
+### Runtime settings
+
+The deployment creates these editable Automation Account variables. Explicit job parameters override their corresponding variables for that job.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `GhostNicOperation` | `Detect` | Default run mode; set to `Remove` only for an approved maintenance operation. |
+| `GhostNicConfirmRemoval` | `false` | Second removal gate. Both this and `GhostNicOperation=Remove` are required. |
+| `GhostNicMaximumCandidateCount` | `1000` | Per-VM candidate safety ceiling. |
+| `GhostNicExclusionTagName` | `ghostNicHunterExclusions` | VM tag used for exclusions. |
+| `GhostNicScanExclusionValues` | `scan,all` | Tag values that block scanning and removal. |
+| `GhostNicRemovalExclusionValues` | `remove,all` | Tag values that allow detection but block removal. |
+| `GhostNicPnpCleanWaitSeconds` | `10` | Delay between PnpClean and the pnputil fallback. |
+| `GhostNicRequireProblemCode45` | `true` | Require `CM_PROB_PHANTOM` code 45 before pnputil removal. |
+
+The target resource groups are stored separately in `GhostNicTargetResourceGroupIds`. The runbook uses Az modules only; do not import AzureRM modules into the same runbook session.
 
 Detection is safe and is the normal first job:
 

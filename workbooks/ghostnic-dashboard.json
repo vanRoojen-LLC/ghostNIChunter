@@ -12,7 +12,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let latest = AzureDiagnostics\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\n| where Succeeded\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId;\nlatest\n| summarize ['Current ghost NICs'] = sum(GhostedCount), ['VMs with ghosts'] = countif(GhostedCount > 0), ['VMs scanned'] = count()",
+        "query": "let latestScans = AzureDiagnostics\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\n| where Succeeded\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId;\nlatestScans\n| summarize ['Current ghost NICs'] = sum(GhostedCount), ['VMs with ghosts'] = countif(GhostedCount > 0), ['VMs scanned'] = count()",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
