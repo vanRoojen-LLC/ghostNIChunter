@@ -7,6 +7,12 @@
 3. Run a `Detect` job and retain its output with the incident or maintenance record.
 4. Before a `Remove` job, create or verify a recovery point/snapshot according to the VM’s existing backup policy. The tool cannot undo registry/device removal.
 
+## Azure portal deployment
+
+The repository’s **Deploy to Azure** button opens the Azure portal template wizard. It creates the Automation account in the selected resource group, imports the published runbook, and grants that account’s managed identity **Virtual Machine Contributor** on the one VM whose full resource ID you enter. That same VM ID becomes the default `GhostNicTargetVmResourceIds` Automation variable, so a first detection job can be started with no parameters.
+
+The portal deployment does not issue a Run Command or remove anything. It requires the deploying user to have role-assignment write permission on the target VM. Add other target VMs deliberately: assign the Automation identity the same role at each VM scope, then append their resource IDs to the variable.
+
 ## Azure authority model
 
 The Automation account uses a system-assigned managed identity. It needs **Virtual Machine Contributor** (or a custom role that includes `Microsoft.Compute/virtualMachines/runCommand/write`) at the exact VM or resource-group scope it will service. Do not grant it subscription-wide authority unless that scope is intentional.

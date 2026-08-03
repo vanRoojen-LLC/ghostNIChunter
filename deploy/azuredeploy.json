@@ -1,0 +1,261 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "17975389124019639846"
+    }
+  },
+  "parameters": {
+    "automationAccountName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Automation Account name. Leave blank to generate a unique name in the selected resource group."
+      }
+    },
+    "targetVmResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Full resource ID of the first Windows Azure VM to scan. The Automation identity receives Virtual Machine Contributor on this VM only."
+      }
+    },
+    "logAnalyticsWorkspaceResourceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional full resource ID of an existing Log Analytics workspace. Enables history collection and the workbook."
+      }
+    },
+    "runbookScriptUri": {
+      "type": "string",
+      "defaultValue": "https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance.ps1",
+      "metadata": {
+        "description": "Public URI of the runbook source. Leave the default unless deploying a reviewed fork or pinned revision."
+      }
+    }
+  },
+  "variables": {
+    "$fxv#0": "{\n  \"version\": \"Notebook/1.0\",\n  \"items\": [\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"# Ghost NIC Hunter\\n\\n**Operational state from Azure Automation JobStreams.** Current values are the newest successful scan for each VM; historical values retain every recorded scan, including VMs that have since been cleaned. Data normally arrives a few minutes after the Automation job completes.\"\n      },\n      \"name\": \"title\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"let latest = AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\\n| where Succeeded\\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId;\\nlatest\\n| summarize ['Current ghost NICs'] = sum(GhostedCount), ['VMs with ghosts'] = countif(GhostedCount > 0), ['VMs scanned'] = count()\",\n        \"size\": 0,\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"tiles\",\n        \"tileSettings\": { \"showBorder\": false, \"size\": \"small\" }\n      },\n      \"name\": \"current-summary\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount)\\n| where Succeeded and Operation == 'Remove'\\n| summarize ['Removal jobs'] = count(), ['Ghost NICs presented for removal'] = sum(GhostedCount), ['Registry paths removed'] = sum(RemovedCount), ['VMs remediated'] = dcount(VmResourceId)\",\n        \"size\": 0,\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"tiles\",\n        \"tileSettings\": { \"showBorder\": false, \"size\": \"small\" }\n      },\n      \"name\": \"removal-summary\"\n    },\n    {\n      \"type\": 1,\n      \"content\": { \"json\": \"## Current top offenders\\n\\nThe latest successful scan is authoritative for present work. Run a detection job before deciding to remove anything.\" },\n      \"name\": \"current-heading\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), ValidCount = toint(event.ValidCount), LastScanUtc = todatetime(event.DetectedAtUtc)\\n| where Succeeded\\n| summarize arg_max(TimeGenerated, GhostedCount, ValidCount, LastScanUtc) by VmResourceId\\n| where GhostedCount > 0\\n| order by GhostedCount desc, LastScanUtc asc\\n| project VM = VmResourceId, ['Ghost NICs now'] = GhostedCount, ['Valid NICs'] = ValidCount, ['Last scan UTC'] = LastScanUtc\",\n        \"size\": 0,\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"table\",\n        \"gridSettings\": { \"filter\": true }\n      },\n      \"name\": \"current-top-offenders\"\n    },\n    {\n      \"type\": 1,\n      \"content\": { \"json\": \"## Cumulative offenders and utility efficacy\\n\\nCumulative observations are intentional: repeated ghost NIC findings on the same VM are a recurrence signal, including for VMs that have since been cleaned.\" },\n      \"name\": \"history-heading\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), Operation = tostring(event.Operation)\\n| where Succeeded\\n| summarize ['Cumulative ghost observations'] = sum(GhostedCount), ['Scans with ghosts'] = countif(GhostedCount > 0), ['Registry paths removed'] = sum(RemovedCount), ['Removal jobs'] = countif(Operation == 'Remove') by VmResourceId\\n| order by ['Cumulative ghost observations'] desc, ['Scans with ghosts'] desc\\n| project VM = VmResourceId, ['Cumulative ghosts'] = ['Cumulative ghost observations'], ['Scans with ghosts'] = ['Scans with ghosts'], ['Paths removed'] = ['Registry paths removed'], ['Removal jobs'] = ['Removal jobs']\",\n        \"size\": 0,\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"table\",\n        \"gridSettings\": { \"filter\": true }\n      },\n      \"name\": \"cumulative-offenders\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"AzureDiagnostics\\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\\n| extend raw = tostring(ResultDescription)\\n| where raw startswith 'GHNIC_RESULT:'\\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\\n| extend Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), RemovedCount = toint(event.RemovedCount)\\n| where Succeeded and Operation == 'Remove'\\n| summarize ['Registry paths removed'] = sum(RemovedCount) by bin(TimeGenerated, 7d)\\n| render timechart\",\n        \"size\": 0,\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.operationalinsights/workspaces\",\n        \"visualization\": \"timechart\",\n        \"chartSettings\": { \"yAxisSettings\": { \"showLegend\": true } }\n      },\n      \"name\": \"removal-trend\"\n    }\n  ],\n  \"isLocked\": false\n}\n",
+    "resolvedAutomationAccountName": "[if(empty(parameters('automationAccountName')), toLower(format('aa-ghostnic-{0}', take(uniqueString(resourceGroup().id, deployment().name), 10))), parameters('automationAccountName'))]",
+    "targetVmResourceIdParts": "[split(parameters('targetVmResourceId'), '/')]",
+    "targetSubscriptionId": "[variables('targetVmResourceIdParts')[2]]",
+    "targetResourceGroupName": "[variables('targetVmResourceIdParts')[4]]",
+    "targetVmName": "[variables('targetVmResourceIdParts')[8]]",
+    "runbookName": "Invoke-GhostNicMaintenance",
+    "tags": {
+      "managedBy": "vanRoojen LLC",
+      "workload": "ghost-nic-hunter",
+      "repository": "https://github.com/vanRoojen-LLC/ghostNIChunter"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Automation/automationAccounts",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('resolvedAutomationAccountName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "tags": "[variables('tags')]",
+      "properties": {
+        "disableLocalAuth": true,
+        "publicNetworkAccess": true,
+        "sku": {
+          "name": "Basic"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Automation/automationAccounts/modules",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('resolvedAutomationAccountName'), 'Az.Accounts')]",
+      "properties": {
+        "contentLink": {
+          "uri": "https://www.powershellgallery.com/api/v2/package/Az.Accounts"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Automation/automationAccounts/modules",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('resolvedAutomationAccountName'), 'Az.Compute')]",
+      "properties": {
+        "contentLink": {
+          "uri": "https://www.powershellgallery.com/api/v2/package/Az.Compute"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Automation/automationAccounts/variables",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('resolvedAutomationAccountName'), 'GhostNicTargetVmResourceIds')]",
+      "properties": {
+        "description": "One or more target VM resource IDs, separated by commas, semicolons, or new lines.",
+        "isEncrypted": false,
+        "value": "[format('\"{0}\"', parameters('targetVmResourceId'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Automation/automationAccounts/runbooks",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('resolvedAutomationAccountName'), variables('runbookName'))]",
+      "location": "[resourceGroup().location]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "description": "Detects or explicitly removes Windows Azure ghosted NIC entries through VM Run Command.",
+        "runbookType": "PowerShell",
+        "logProgress": true,
+        "logVerbose": true,
+        "publishContentLink": {
+          "uri": "[parameters('runbookScriptUri')]",
+          "version": "1.0.0.0"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]",
+        "[resourceId('Microsoft.Automation/automationAccounts/modules', variables('resolvedAutomationAccountName'), 'Az.Accounts')]",
+        "[resourceId('Microsoft.Automation/automationAccounts/modules', variables('resolvedAutomationAccountName'), 'Az.Compute')]"
+      ]
+    },
+    {
+      "condition": "[not(empty(parameters('logAnalyticsWorkspaceResourceId')))]",
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]",
+      "name": "ghostnic-to-log-analytics",
+      "properties": {
+        "workspaceId": "[parameters('logAnalyticsWorkspaceResourceId')]",
+        "logs": [
+          {
+            "category": "JobLogs",
+            "enabled": true
+          },
+          {
+            "category": "JobStreams",
+            "enabled": true
+          }
+        ],
+        "metrics": []
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[not(empty(parameters('logAnalyticsWorkspaceResourceId')))]",
+      "type": "Microsoft.Insights/workbooks",
+      "apiVersion": "2023-06-01",
+      "name": "[guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', parameters('logAnalyticsWorkspaceResourceId'))]",
+      "location": "[resourceGroup().location]",
+      "kind": "shared",
+      "properties": {
+        "displayName": "Ghost NIC Hunter dashboard",
+        "serializedData": "[variables('$fxv#0')]",
+        "category": "workbook",
+        "sourceId": "[parameters('logAnalyticsWorkspaceResourceId')]",
+        "version": "1.0"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('ghostnic-vm-rbac-{0}', take(uniqueString(parameters('targetVmResourceId'), variables('resolvedAutomationAccountName')), 12))]",
+      "subscriptionId": "[variables('targetSubscriptionId')]",
+      "resourceGroup": "[variables('targetResourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "targetVmName": {
+            "value": "[variables('targetVmName')]"
+          },
+          "targetVmResourceId": {
+            "value": "[parameters('targetVmResourceId')]"
+          },
+          "automationPrincipalId": {
+            "value": "[reference(resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName')), '2023-11-01', 'full').identity.principalId]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "7607268893547371331"
+            }
+          },
+          "parameters": {
+            "targetVmName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the target VM in this resource group."
+              }
+            },
+            "targetVmResourceId": {
+              "type": "string",
+              "metadata": {
+                "description": "Full resource ID of the target VM."
+              }
+            },
+            "automationPrincipalId": {
+              "type": "string",
+              "metadata": {
+                "description": "System-assigned managed identity principal ID for the Automation account."
+              }
+            }
+          },
+          "variables": {
+            "virtualMachineContributorRoleDefinitionId": "9980e02c-c2be-4d73-94e8-173b1dc7c0c3"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Compute/virtualMachines', parameters('targetVmName'))]",
+              "name": "[guid(parameters('targetVmResourceId'), parameters('automationPrincipalId'), variables('virtualMachineContributorRoleDefinitionId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('virtualMachineContributorRoleDefinitionId'))]",
+                "principalId": "[parameters('automationPrincipalId')]",
+                "principalType": "ServicePrincipal"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "automationAccountName": {
+      "type": "string",
+      "value": "[variables('resolvedAutomationAccountName')]"
+    },
+    "runbookName": {
+      "type": "string",
+      "value": "[variables('runbookName')]"
+    },
+    "targetVmResourceId": {
+      "type": "string",
+      "value": "[parameters('targetVmResourceId')]"
+    }
+  }
+}

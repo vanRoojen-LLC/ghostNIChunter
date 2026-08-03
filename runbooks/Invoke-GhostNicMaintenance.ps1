@@ -8,11 +8,9 @@ fail-closed: it requires Operation=Remove and ConfirmRemoval=$true.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-fA-F-]{36}$')]
     [string]$SubscriptionId,
 
-    [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string[]]$TargetVmResourceIds,
 
@@ -27,6 +25,26 @@ $ErrorActionPreference = 'Stop'
 
 if ($Operation -eq 'Remove' -and -not $ConfirmRemoval) {
     throw 'Removal is blocked. Set both Operation=Remove and ConfirmRemoval=$true after reviewing a detection job and confirming a VM recovery point.'
+}
+
+if (-not $TargetVmResourceIds -or $TargetVmResourceIds.Count -eq 0) {
+    $configuredTargets = Get-AutomationVariable -Name 'GhostNicTargetVmResourceIds' -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($configuredTargets)) {
+        throw 'No targets were supplied. Pass TargetVmResourceIds or configure the GhostNicTargetVmResourceIds Automation variable.'
+    }
+    $TargetVmResourceIds = @(
+        $configuredTargets -split '[,;\r\n]+' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+}
+
+if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
+    $firstTargetSubscriptionMatch = [regex]::Match($TargetVmResourceIds[0], '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if (-not $firstTargetSubscriptionMatch.Success) {
+        throw "Cannot infer SubscriptionId from target: $($TargetVmResourceIds[0])"
+    }
+    $SubscriptionId = $firstTargetSubscriptionMatch.Groups['subscriptionId'].Value
 }
 
 Connect-AzAccount -Identity | Out-Null

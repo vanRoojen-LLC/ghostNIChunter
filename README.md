@@ -4,7 +4,7 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with a system-assigned managed identity and publishes one PowerShell runbook: `Invoke-GhostNicMaintenance`. The runbook uses Azure VM Run Command, so it does not require a Hybrid Runbook Worker or credentials stored in Automation.
 
-[![Deploy Ghost NIC Hunter](https://github.com/vanRoojen-LLC/ghostNIChunter/actions/workflows/deploy.yml/badge.svg)](https://github.com/vanRoojen-LLC/ghostNIChunter/actions/workflows/deploy.yml)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy.json)
 
 ## What it does
 
@@ -15,6 +15,16 @@ It deploys an Azure Automation account with a system-assigned managed identity a
 Microsoft describes this as a design behavior of Accelerated Networking after deallocation/reallocation; it recommends checking first and making cleanup regular maintenance when appropriate. It also advises a recovery point before removal. See [the Microsoft troubleshooting guidance](https://learn.microsoft.com/en-us/troubleshoot/azure/virtual-machines/windows/windows-vm-ghostednic-troubleshooting).
 
 ## Deploy
+
+### Deploy to Azure portal wizard
+
+Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, then collect the first target Windows VM resource ID and, optionally, an existing Log Analytics workspace resource ID. The wizard creates the Automation account, imports the runbook, stores that VM as the default target, and grants its managed identity **Virtual Machine Contributor on that VM only**.
+
+The deploying identity needs permission to create the Automation account in the selected resource group and `Microsoft.Authorization/roleAssignments/write` on the target VM. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
+
+For another VM, add its resource ID to the `GhostNicTargetVmResourceIds` Automation variable and grant the Automation identity the same VM-scoped role on that VM. Do not grant subscription-wide authority merely for convenience.
+
+### CLI or GitHub Actions deployment
 
 Prerequisites: PowerShell 7+, Azure PowerShell modules (`Az.Accounts`, `Az.Resources`, `Az.Automation`), Azure CLI with Bicep available, and an Azure identity permitted to create the Automation account. To grant the runbook identity access, the deployer also needs `Microsoft.Authorization/roleAssignments/write` at each selected scope.
 
@@ -31,9 +41,9 @@ Connect-AzAccount
 
 `TargetScope` is optional. When supplied, the deployment grants the Automation identity **Virtual Machine Contributor** at that exact scope, which is the minimum built-in role that includes `Microsoft.Compute/virtualMachines/runCommand/write`. Use a VM resource ID rather than a resource-group ID to limit authority to one VM.
 
-### Deploy from GitHub
+### GitHub Actions alternative
 
-The workflow badge above opens **Actions → Deploy Ghost NIC Hunter → Run workflow**. Before its first use, configure these repository Actions variables for an Azure app registration with a federated credential for this repository/environment:
+The repository also includes **Actions → Deploy Ghost NIC Hunter → Run workflow** for repeatable CI-style deployments. Before its first use, configure these repository Actions variables for an Azure app registration with a federated credential for this repository/environment:
 
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
