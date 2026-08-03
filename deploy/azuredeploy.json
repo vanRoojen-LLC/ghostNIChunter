@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "17558072955079682965"
+      "templateHash": "16212655376244525776"
     }
   },
   "parameters": {
@@ -165,6 +165,7 @@
       "name": "[guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', parameters('logAnalyticsWorkspaceResourceId'))]",
       "location": "[resourceGroup().location]",
       "kind": "shared",
+      "tags": "[union(variables('tags'), createObject('component', 'workbook'))]",
       "properties": {
         "displayName": "Ghost NIC Hunter dashboard",
         "serializedData": "[variables('$fxv#0')]",

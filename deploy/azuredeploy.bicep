@@ -123,6 +123,7 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = if (!empty(logAnal
   name: guid(resourceGroup().id, 'Ghost NIC Hunter dashboard', logAnalyticsWorkspaceResourceId)
   location: resourceGroup().location
   kind: 'shared'
+  tags: union(tags, { component: 'workbook' })
   properties: {
     displayName: 'Ghost NIC Hunter dashboard'
     serializedData: loadTextContent('../workbooks/ghostnic-dashboard.json')
