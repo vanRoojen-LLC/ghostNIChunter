@@ -4,16 +4,22 @@
     {
       "type": 1,
       "content": {
-        "json": "# Ghost NIC Hunter\n\n**Operational state from Azure Automation JobStreams.** Current values are the newest successful scan for each VM; historical values retain every recorded scan, including VMs that have since been cleaned. Data normally arrives a few minutes after the Automation job completes."
+        "json": "# Ghost NIC Hunter\n\n**Latest successful scan per VM.** History retains every recorded scan, including cleaned VMs; data can arrive a few minutes after the Automation job completes."
       },
       "name": "title"
     },
     {
-      "type": 3,
+      "type": 12,
       "content": {
+        "version": "NotebookGroup/1.0",
+        "groupType": "editable",
+        "items": [
+          {
+            "type": 3,
+            "content": {
         "version": "KqlItem/1.0",
         "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\n| where Succeeded\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId\n| summarize CurrentGhostNics = sum(GhostedCount), VmsWithGhosts = countif(GhostedCount > 0), VmsScanned = count()\n| project Metrics = pack_array(pack('Metric', 'Current ghost NICs', 'Value', CurrentGhostNics), pack('Metric', 'VMs with ghosts', 'Value', VmsWithGhosts), pack('Metric', 'VMs scanned', 'Value', VmsScanned))\n| mv-expand Metrics\n| project Metric = tostring(Metrics.Metric), Value = tolong(Metrics.Value)",
-        "size": 0,
+        "size": 4,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "visualization": "tiles",
@@ -39,17 +45,19 @@
               }
             }
           },
+          "size": "auto",
           "showBorder": false
         }
       },
+      "customWidth": "42",
       "name": "current-summary"
-    },
-    {
-      "type": 3,
-      "content": {
+          },
+          {
+            "type": 3,
+            "content": {
         "version": "KqlItem/1.0",
         "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount)\n| where Succeeded and Operation == 'Remove'\n| summarize RemovalJobs = count(), GhostCandidates = sum(GhostedCount), PathsRemoved = sum(RemovedCount), VmsRemediated = dcount(VmResourceId)\n| project Metrics = pack_array(pack('Metric', 'Removal jobs', 'Value', RemovalJobs), pack('Metric', 'Ghost NICs presented', 'Value', GhostCandidates), pack('Metric', 'Registry paths removed', 'Value', PathsRemoved), pack('Metric', 'VMs remediated', 'Value', VmsRemediated))\n| mv-expand Metrics\n| project Metric = tostring(Metrics.Metric), Value = tolong(Metrics.Value)",
-        "size": 0,
+        "size": 4,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "visualization": "tiles",
@@ -75,14 +83,20 @@
               }
             }
           },
+          "size": "auto",
           "showBorder": false
         }
       },
+      "customWidth": "58",
       "name": "removal-summary"
+          }
+        ]
+      },
+      "name": "overview"
     },
     {
       "type": 1,
-      "content": { "json": "## Current top offenders\n\nThe latest successful scan is authoritative for present work. Run a detection job before deciding to remove anything." },
+      "content": { "json": "## Current top offenders\n\nLatest successful scan only. Run Detect before removing anything." },
       "name": "current-heading"
     },
     {
@@ -100,7 +114,7 @@
     },
     {
       "type": 1,
-      "content": { "json": "## Cumulative offenders and utility efficacy\n\nCumulative observations are intentional: repeated ghost NIC findings on the same VM are a recurrence signal, including for VMs that have since been cleaned." },
+      "content": { "json": "## History and remediation\n\nRepeated findings indicate recurrence; cleaned VMs remain in history." },
       "name": "history-heading"
     },
     {
@@ -125,7 +139,7 @@
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "visualization": "timechart",
-        "chartSettings": { "yAxisSettings": { "showLegend": true } }
+        "chartSettings": { "showLegend": false, "showMetrics": false }
       },
       "name": "removal-trend"
     }

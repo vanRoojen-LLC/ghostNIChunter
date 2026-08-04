@@ -4,8 +4,8 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with managed identities and publishes the `Invoke-GhostNicMaintenance` PowerShell runbook. A small `Initialize-GhostNicSchedule` bootstrap runbook safely creates the daily schedule association, then the maintenance runbook uses Azure VM Run Command without a Hybrid Runbook Worker or credentials stored in Automation.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-1.json)
-[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-1.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-2.json)
+[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-2.json)
 
 ## What it does
 
