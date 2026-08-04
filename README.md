@@ -2,10 +2,10 @@
 
 Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only with an explicit second confirmation, removing stale Windows network-device entries caused by Azure Accelerated Networking after a VM is deallocated and allocated again.
 
-It deploys an Azure Automation account with a system-assigned managed identity and publishes one PowerShell runbook: `Invoke-GhostNicMaintenance`. The runbook uses Azure VM Run Command, so it does not require a Hybrid Runbook Worker or credentials stored in Automation.
+It deploys an Azure Automation account with managed identities and publishes the `Invoke-GhostNicMaintenance` PowerShell runbook. A small `Initialize-GhostNicSchedule` bootstrap runbook safely creates the daily schedule association, then the maintenance runbook uses Azure VM Run Command without a Hybrid Runbook Worker or credentials stored in Automation.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-6.json)
-[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-6.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-7.json)
+[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-7.json)
 
 ## What it does
 
@@ -21,7 +21,7 @@ Microsoft describes this as a design behavior of Accelerated Networking after de
 
 Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, and enter one target resource-group ID or multiple IDs separated by commas. The wizard automatically generates the Automation account and a dedicated Log Analytics workspace, imports the runbook, deploys the workbook, and grants its managed identity **Virtual Machine Contributor** on each selected target group.
 
-The deploying identity needs permission to create the Automation account, workspace, workbook, managed identity, deployment script, and role assignments. A narrowly scoped helper identity links the runbook to its schedule without creating a duplicate association on redeployment. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
+The deploying identity needs permission to create the Automation account, workspace, workbook, managed identity, Automation jobs, and role assignments. A helper user-assigned identity has Automation Contributor only on the generated Automation account; a one-time bootstrap job uses it to link the runbook to its schedule without creating a duplicate association. This does not use Deployment Scripts, temporary storage accounts, or container instances. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
 
 For another VM, add its resource ID to the `GhostNicTargetVmResourceIds` Automation variable and grant the Automation identity the same VM-scoped role on that VM. Do not grant subscription-wide authority merely for convenience.
 
@@ -114,5 +114,6 @@ The device-classification and cleanup approach is derived from Microsoft’s [de
 
 - `infra/main.bicep` — Automation account with system-assigned managed identity.
 - `runbooks/Invoke-GhostNicMaintenance.ps1` — Azure Automation entry point and in-guest cleanup payload.
+- `runbooks/Initialize-GhostNicSchedule.ps1` — storage-free, idempotent schedule-link bootstrap runbook.
 - `deploy/Deploy-GhostNicHunter.ps1` — idempotent account/runbook deployment and optional least-scope role assignment.
 - `docs/operations.md` — operational runbook, outputs, and rollback boundary.

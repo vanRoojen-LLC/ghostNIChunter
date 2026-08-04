@@ -13,20 +13,31 @@ var dailyScheduleName = 'GhostNic-Daily-Detect-1230'
 var dailyScheduleTimeZone = 'America/Los_Angeles'
 var dailyScheduleStartTime = '${substring(dateTimeAdd(deploymentTime, 'P1D'), 0, 10)}T12:30:00'
 var dailyJobScheduleId = guid(automationAccount.id, runbookName, dailyScheduleName)
+var scheduleBootstrapRunbookName = 'Initialize-GhostNicSchedule'
+var scheduleBootstrapRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20260803-7.ps1'
 var automationContributorRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f353d9bd-d4a6-484e-a77a-8050b599b867')
 var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803-5.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: '20260803-6'
+  sourceRevision: '20260803-7'
+}
+
+resource scheduleLinkerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-ghostnic-schedule-${take(uniqueString(resourceGroup().id, resolvedAutomationAccountName), 10)}'
+  location: resourceGroup().location
+  tags: union(tags, { component: 'schedule-linker' })
 }
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2023-11-01' = {
   name: resolvedAutomationAccountName
   location: resourceGroup().location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${scheduleLinkerIdentity.id}': {}
+    }
   }
   tags: tags
   properties: {
@@ -135,12 +146,6 @@ resource dailyDetectionSchedule 'Microsoft.Automation/automationAccounts/schedul
   }
 }
 
-resource scheduleLinkerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-ghostnic-schedule-${take(uniqueString(resourceGroup().id, resolvedAutomationAccountName), 10)}'
-  location: resourceGroup().location
-  tags: union(tags, { component: 'schedule-linker' })
-}
-
 resource scheduleLinkerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(automationAccount.id, scheduleLinkerIdentity.id, automationContributorRoleDefinitionId)
   scope: automationAccount
@@ -151,79 +156,50 @@ resource scheduleLinkerRole 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-// Azure Automation exposes jobSchedules as create-only. Use an idempotent linker so
-// redeployments reuse the existing runbook/schedule association instead of returning 409.
-resource dailyDetectionJobSchedule 'Microsoft.Resources/deploymentScripts@2023-08-01' = {
-  name: 'ensure-ghostnic-daily-job-schedule'
+resource scheduleBootstrapRunbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = {
+  parent: automationAccount
+  name: scheduleBootstrapRunbookName
   location: resourceGroup().location
-  kind: 'AzureCLI'
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${scheduleLinkerIdentity.id}': {}
+  dependsOn: [
+    azAccountsModule
+  ]
+  tags: union(tags, { component: 'schedule-linker' })
+  properties: {
+    description: 'Idempotently links the Ghost NIC maintenance runbook to its daily schedule.'
+    runbookType: 'PowerShell'
+    logProgress: false
+    logVerbose: true
+    publishContentLink: {
+      uri: scheduleBootstrapRunbookUri
+      version: '1.0.0.0'
     }
   }
+}
+
+// Job schedules are create-only, so a small Automation job checks before creating the
+// association. This stays inside Azure Automation and does not require Deployment Scripts,
+// temporary storage accounts, container instances, or a policy exemption.
+resource dailyDetectionJobSchedule 'Microsoft.Automation/automationAccounts/jobs@2023-11-01' = {
+  parent: automationAccount
+  name: guid(automationAccount.id, 'schedule-bootstrap', deploymentTime)
   dependsOn: [
     runbook
     dailyDetectionSchedule
     scheduleLinkerRole
+    scheduleBootstrapRunbook
   ]
   properties: {
-    azCliVersion: '2.64.0'
-    cleanupPreference: 'OnSuccess'
-    retentionInterval: 'PT1H'
-    timeout: 'PT10M'
-    forceUpdateTag: deploymentTime
-    environmentVariables: [
-      {
-        name: 'AUTOMATION_ACCOUNT_ID'
-        value: automationAccount.id
-      }
-      {
-        name: 'RUNBOOK_NAME'
-        value: runbookName
-      }
-      {
-        name: 'SCHEDULE_NAME'
-        value: dailyScheduleName
-      }
-      {
-        name: 'JOB_SCHEDULE_ID'
-        value: dailyJobScheduleId
-      }
-    ]
-    scriptContent: '''
-      set -eu
-
-      collection_uri="${AUTOMATION_ACCOUNT_ID}/jobSchedules?api-version=2023-11-01"
-      association_query="length(value[?properties.runbook.name=='${RUNBOOK_NAME}' && properties.schedule.name=='${SCHEDULE_NAME}'])"
-      attempt=1
-
-      while true; do
-        if existing_count="$(az rest --method get --url "$collection_uri" --query "$association_query" --output tsv --only-show-errors 2>&1)"; then
-          break
-        fi
-
-        if [ "$attempt" -ge 30 ]; then
-          echo "Unable to inspect Azure Automation job schedules after 30 attempts: $existing_count" >&2
-          exit 1
-        fi
-
-        attempt=$((attempt + 1))
-        sleep 10
-      done
-
-      if [ "$existing_count" != "0" ]; then
-        echo "The runbook is already linked to the daily schedule; no change is required."
-        exit 0
-      fi
-
-      association_uri="${AUTOMATION_ACCOUNT_ID}/jobSchedules/${JOB_SCHEDULE_ID}?api-version=2023-11-01"
-      association_body="$(printf '{\"properties\":{\"parameters\":{\"Operation\":\"Detect\"},\"runbook\":{\"name\":\"%s\"},\"schedule\":{\"name\":\"%s\"}}}' "$RUNBOOK_NAME" "$SCHEDULE_NAME")"
-
-      az rest --method put --url "$association_uri" --body "$association_body" --output none --only-show-errors
-      echo "Linked the runbook to the daily schedule in Detect mode."
-    '''
+    parameters: {
+      AutomationAccountResourceId: automationAccount.id
+      RunbookName: runbookName
+      ScheduleName: dailyScheduleName
+      JobScheduleId: dailyJobScheduleId
+      ScheduleLinkerClientId: scheduleLinkerIdentity.properties.clientId
+      AzureEnvironmentName: environment().name
+    }
+    runbook: {
+      name: scheduleBootstrapRunbookName
+    }
   }
 }
 
