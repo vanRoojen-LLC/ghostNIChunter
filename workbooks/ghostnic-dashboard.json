@@ -6,7 +6,8 @@
       "content": {
         "json": "# Ghost NIC Hunter\n\n**Latest successful scan per VM.** History retains every structured result, including cleaned VMs. Removal totals include reported candidate removals even when final safety validation aborts; safety aborts remain identified separately. Data can arrive a few minutes after the Automation job completes."
       },
-      "name": "title"
+      "name": "title",
+      "customWidth": "90"
     },
     {
       "type": 12,
@@ -92,7 +93,8 @@
           }
         ]
       },
-      "name": "overview"
+      "name": "overview",
+      "customWidth": "90"
     },
     {
       "type": 3,
@@ -112,7 +114,8 @@
     {
       "type": 1,
       "content": { "json": "## Current top offenders\n\nLatest successful scan only. **VM status** is read from Azure Resource Graph when the workbook refreshes; **Last-run status** is retained as a fallback. Run Detect before removing anything." },
-      "name": "current-heading"
+      "name": "current-heading",
+      "customWidth": "90"
     },
     {
       "type": 3,
@@ -139,12 +142,14 @@
         "showRefreshButton": true,
         "gridSettings": { "filter": true, "rowLimit": 1000 }
       },
-      "name": "current-top-offenders"
+      "name": "current-top-offenders",
+      "customWidth": "90"
     },
     {
       "type": 1,
       "content": { "json": "## History and remediation\n\nRepeated findings indicate recurrence; cleaned VMs remain in history. Reported removals are counted from structured results even when final safety validation returns **SafetyAbort** or **PartialFailure**. **VM status** is refreshed from Azure Resource Graph; **Last-run status** remains visible for deleted or inaccessible VMs." },
-      "name": "history-heading"
+      "name": "history-heading",
+      "customWidth": "90"
     },
     {
       "type": 3,
@@ -171,7 +176,8 @@
         "showRefreshButton": true,
         "gridSettings": { "filter": true, "rowLimit": 1000 }
       },
-      "name": "cumulative-offenders"
+      "name": "cumulative-offenders",
+      "customWidth": "90"
     },
     {
       "type": 3,
@@ -184,7 +190,8 @@
         "visualization": "timechart",
         "chartSettings": { "showLegend": false, "showMetrics": false }
       },
-      "name": "removal-trend"
+      "name": "removal-trend",
+      "customWidth": "90"
     }
   ],
   "isLocked": false
