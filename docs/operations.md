@@ -25,7 +25,7 @@ The person or pipeline running `Deploy-GhostNicHunter.ps1` needs permission to d
 
 ## Expected result format
 
-Each VM produces a compact, prefixed JSON output record: `GHNIC_RESULT:{...}`. A successful record has `GhostedCount`, `ValidCount`, `RemovedCount`, `PowerState`, `Operation`, and `RestartRequired`; a failure record has `Succeeded:false`, the most recently observed `PowerState`, and an error. This stable marker is what the optional workbook parses from `AzureDiagnostics` JobStreams.
+Each VM produces a compact, prefixed JSON output record: `GHNIC_RESULT:{...}`. A structured guest result has `GhostedCount`, `ValidCount`, `RemovedCount`, `PowerState`, `Operation`, `RestartRequired`, and active-adapter validation details even when final validation fails. An orchestration or unparseable guest failure has `Succeeded:false`, the most recently observed `PowerState`, and an error. This stable marker is what the optional workbook parses from `AzureDiagnostics` JobStreams.
 
 When removal completes, `RestartRequired` is reported as true when it deleted registry paths. Schedule the reboot through the VM’s normal change process; Ghost NIC Hunter never restarts a VM itself.
 
@@ -35,7 +35,7 @@ With `LogAnalyticsWorkspaceResourceId` set during deployment, diagnostic setting
 
 - **Current top offenders** — the most recent successful scan for every VM, sorted by current ghost count, merged with power state from Azure Resource Graph at workbook refresh time.
 - **Cumulative offenders** — each VM’s total ghost observations and scans with ghosts, retaining VMs that are now clean so recurrence remains visible, plus refresh-time Resource Graph power state.
-- **Efficacy** — removal job count, ghost NICs presented to removal, registry paths actually removed, and a weekly removal trend.
+- **Efficacy** — removal job count, ghost NICs presented to removal, ghost NICs reported removed, safety-abort count, and a weekly removal trend.
 
 Cumulative ghost observations are not deduplicated devices; scanning an uncleared VM again adds another observation by design. `VM status` is the Resource Graph value at workbook refresh, while `Last-run status` is the state recorded by Automation and remains available when the live lookup has no match. The scan data still depends on Azure Monitor log delivery, so new detection results can take a few minutes to appear after a completed Automation job.
 
@@ -45,4 +45,5 @@ Cumulative ghost observations are not deduplicated devices; scanning an uncleare
 - In the portal Start pane, enter `TargetVmResourceIds` as one resource ID, a comma/semicolon/newline-separated string, or a JSON string array. The runbook intentionally exposes this as a string so a single ID cannot fail Azure Automation parameter binding before the job starts.
 - A target without Run Command permission, a stopped/deallocated VM, or an unhealthy VM agent produces a per-VM failure record; it does not make the runbook silently succeed.
 - A removal without both explicit confirmation values is rejected before any VM command is sent.
+- After removal, the guest retries adapter validation up to six times at five-second intervals. It matches adapters by normalized PnP ID, interface GUID, or MAC address so ordinary PnP re-enumeration does not create a false abort. `MissingActiveAdapters`, `AddedActiveAdapters`, and `ReenumeratedActiveAdapters` identify any observed change; only a previously up adapter that remains missing or not up produces `SafetyAbort`.
 - If the cleanup fails partway through, use the VM recovery point/change record and investigate with Microsoft support guidance; do not rerun removal blindly.

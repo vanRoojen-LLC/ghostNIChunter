@@ -4,8 +4,8 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with managed identities and publishes the `Invoke-GhostNicMaintenance` PowerShell runbook. A small `Initialize-GhostNicSchedule` bootstrap runbook safely creates the daily schedule association, then the maintenance runbook uses Azure VM Run Command without a Hybrid Runbook Worker or credentials stored in Automation.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-7.json)
-[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-7.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-8.json)
+[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-8.json)
 
 ## What it does
 
@@ -106,6 +106,7 @@ The optional Azure Monitor Workbook has four evidence views: current total/VM co
 - The runbook only supports Windows VMs through `RunPowerShellScript`.
 - It deliberately does not stop, deallocate, restart, snapshot, or modify Azure VM resources.
 - A removal job fails closed unless both confirmation switches are supplied.
+- After cleanup, active adapters are matched by PnP ID, interface GUID, or MAC address for up to six five-second validation attempts. A re-enumerated healthy adapter is reported as `PassedWithChanges`; `SafetyAbort` is reserved for a previously active adapter that remains missing or not up.
 - Run Command requires the VM agent to be healthy and only one command can run at a time on a VM.
 
 The device-classification and cleanup approach is derived from Microsoft’s [detection](https://github.com/Azure/azure-support-scripts/tree/master/RunCommand/Windows/Windows_GhostedNIC_Detection) and [removal](https://github.com/Azure/azure-support-scripts/tree/master/RunCommand/Windows/Windows_GhostedNIC_Removal) samples. Microsoft’s samples are provided as-is; this project supplies the Automation orchestration and more restrictive execution gate.
