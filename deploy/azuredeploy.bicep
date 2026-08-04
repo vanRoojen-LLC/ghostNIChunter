@@ -3,15 +3,21 @@ targetScope = 'resourceGroup'
 @description('Comma-separated full resource IDs of target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
 param targetResourceGroupIds string
 
+@description('Deployment timestamp used to choose a future first run for the daily schedule.')
+param deploymentTime string = utcNow()
+
 var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(subscription().id, resourceGroup().id, 'ghostnic'), 10)}')
 var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
 var runbookName = 'Invoke-GhostNicMaintenance'
-var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803-3.ps1'
+var dailyScheduleName = 'GhostNic-Daily-Detect-1230'
+var dailyScheduleTimeZone = 'America/Los_Angeles'
+var dailyScheduleStartTime = '${substring(dateTimeAdd(deploymentTime, 'P1D'), 0, 10)}T12:30:00'
+var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803-4.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: '20260803-3'
+  sourceRevision: '20260803-4'
 }
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2023-11-01' = {
@@ -115,6 +121,38 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
   }
 }
 
+resource dailyDetectionSchedule 'Microsoft.Automation/automationAccounts/schedules@2023-11-01' = {
+  parent: automationAccount
+  name: dailyScheduleName
+  properties: {
+    description: 'Runs Ghost NIC detection daily at 12:30 PM Pacific time. Administrators can adjust this schedule in Azure Automation.'
+    frequency: 'Day'
+    interval: 1
+    startTime: dailyScheduleStartTime
+    timeZone: dailyScheduleTimeZone
+  }
+}
+
+resource dailyDetectionJobSchedule 'Microsoft.Automation/automationAccounts/jobSchedules@2023-11-01' = {
+  parent: automationAccount
+  name: guid(automationAccount.id, runbookName, dailyScheduleName)
+  dependsOn: [
+    runbook
+    dailyDetectionSchedule
+  ]
+  properties: {
+    parameters: {
+      Operation: 'Detect'
+    }
+    runbook: {
+      name: runbookName
+    }
+    schedule: {
+      name: dailyScheduleName
+    }
+  }
+}
+
 module targetResourceGroupRoles 'target-resource-group-role.bicep' = [for targetResourceGroupId in resolvedTargetResourceGroupIds: {
   name: 'ghostnic-rg-rbac-${take(uniqueString(targetResourceGroupId, resolvedAutomationAccountName), 12)}'
   scope: resourceGroup(split(targetResourceGroupId, '/')[2], split(targetResourceGroupId, '/')[4])
@@ -162,3 +200,5 @@ output runbookName string = runbookName
 output targetResourceGroupIds array = resolvedTargetResourceGroupIds
 output workspaceId string = workspaceId
 output workbookId string = workbook.id
+output dailyScheduleName string = dailyScheduleName
+output dailyScheduleTimeZone string = dailyScheduleTimeZone

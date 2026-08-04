@@ -4,8 +4,8 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with a system-assigned managed identity and publishes one PowerShell runbook: `Invoke-GhostNicMaintenance`. The runbook uses Azure VM Run Command, so it does not require a Hybrid Runbook Worker or credentials stored in Automation.
 
-<a href="https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-3.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazurebutton" alt="Deploy to Azure"></a>
-<a href="https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-3.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazuregovbutton" alt="Deploy to Azure Gov"></a>
+<a href="https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-4.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazurebutton" alt="Deploy to Azure"></a>
+<a href="https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-4.json" target="_blank" rel="noopener noreferrer"><img src="https://aka.ms/deploytoazuregovbutton" alt="Deploy to Azure Gov"></a>
 
 ## What it does
 
@@ -67,6 +67,12 @@ The deployment creates these editable Automation Account variables. Explicit job
 | `GhostNicRequireProblemCode45` | `true` | Require `CM_PROB_PHANTOM` code 45 before pnputil removal. |
 
 The target resource groups are stored separately in `GhostNicTargetResourceGroupIds`. The runbook uses Az modules only; do not import AzureRM modules into the same runbook session.
+
+### Daily schedule
+
+Deployment creates and links an enabled Automation schedule named `GhostNic-Daily-Detect-1230`. It runs every day at **12:30 PM Pacific time** (`America/Los_Angeles`, including daylight-saving adjustments) with `Operation=Detect`. An administrator can change or disable it under **Automation Account → Shared Resources → Schedules**.
+
+Before issuing VM Run Command, the runbook checks Azure power state in batches. VMs that are not `VM running` are recorded as `OfflineSkipped` with `CommandIssued=false`, avoiding the Run Command timeout for stopped or deallocated hosts.
 
 Detection is safe and is the normal first job:
 

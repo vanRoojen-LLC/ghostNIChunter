@@ -24,6 +24,8 @@ param(
 
     [string]$WorkbookDisplayName = 'Ghost NIC Hunter dashboard',
 
+    [string]$DailyScheduleTimeZone = 'America/Los_Angeles',
+
     [hashtable]$Tags = @{
         managedBy = 'vanRoojen LLC'
         workload  = 'ghost-nic-hunter'
@@ -105,6 +107,29 @@ if ($existingRunbook) {
     Import-AzAutomationRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $runbookName -Type PowerShell -Path $runbookFile -Published
 }
 
+$dailyScheduleName = 'GhostNic-Daily-Detect-1230'
+$dailySchedule = Get-AzAutomationSchedule -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $dailyScheduleName -ErrorAction SilentlyContinue
+if (-not $dailySchedule -and $PSCmdlet.ShouldProcess($dailyScheduleName, "Create daily 12:30 PM schedule in $DailyScheduleTimeZone")) {
+    $dailySchedule = New-AzAutomationSchedule `
+        -ResourceGroupName $ResourceGroupName `
+        -AutomationAccountName $AutomationAccountName `
+        -Name $dailyScheduleName `
+        -StartTime ((Get-Date '12:30:00').AddDays(1)) `
+        -DayInterval 1 `
+        -TimeZone $DailyScheduleTimeZone `
+        -Description 'Runs Ghost NIC detection daily at 12:30 PM local time. Administrators can adjust this schedule in Azure Automation.'
+}
+
+$scheduledRunbook = Get-AzAutomationScheduledRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -ScheduleName $dailyScheduleName -RunbookName $runbookName -ErrorAction SilentlyContinue
+if (-not $scheduledRunbook -and $PSCmdlet.ShouldProcess($runbookName, "Link to $dailyScheduleName in Detect mode")) {
+    Register-AzAutomationScheduledRunbook `
+        -ResourceGroupName $ResourceGroupName `
+        -AutomationAccountName $AutomationAccountName `
+        -RunbookName $runbookName `
+        -ScheduleName $dailyScheduleName `
+        -Parameters @{ Operation = 'Detect' } | Out-Null
+}
+
 foreach ($targetResourceGroupId in $targetResourceGroupIds) {
     $existingAssignment = Get-AzRoleAssignment -ObjectId $automationAccount.Identity.PrincipalId -Scope $targetResourceGroupId -RoleDefinitionName 'Virtual Machine Contributor' -ErrorAction SilentlyContinue
     if (-not $existingAssignment -and $PSCmdlet.ShouldProcess($targetResourceGroupId, 'Grant Virtual Machine Contributor to Automation managed identity')) {
@@ -118,5 +143,7 @@ foreach ($targetResourceGroupId in $targetResourceGroupIds) {
     Runbook             = $runbookName
     TargetResourceGroupIds = $targetResourceGroupIds
     WorkbookEnabled     = $true
+    DailySchedule       = $dailyScheduleName
+    DailyScheduleTimeZone = $DailyScheduleTimeZone
     NextStep            = 'Start Invoke-GhostNicMaintenance with Operation=Detect; target VMs will be discovered from the configured resource groups.'
 }
