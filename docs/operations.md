@@ -25,7 +25,7 @@ The person or pipeline running `Deploy-GhostNicHunter.ps1` needs permission to d
 
 ## Expected result format
 
-Each VM produces a compact, prefixed JSON output record: `GHNIC_RESULT:{...}`. A successful record has `GhostedCount`, `ValidCount`, `RemovedCount`, `Operation`, and `RestartRequired`; a failure record has `Succeeded:false` and an error. This stable marker is what the optional workbook parses from `AzureDiagnostics` JobStreams.
+Each VM produces a compact, prefixed JSON output record: `GHNIC_RESULT:{...}`. A successful record has `GhostedCount`, `ValidCount`, `RemovedCount`, `PowerState`, `Operation`, and `RestartRequired`; a failure record has `Succeeded:false`, the most recently observed `PowerState`, and an error. This stable marker is what the optional workbook parses from `AzureDiagnostics` JobStreams.
 
 When removal completes, `RestartRequired` is reported as true when it deleted registry paths. Schedule the reboot through the VM’s normal change process; Ghost NIC Hunter never restarts a VM itself.
 
@@ -33,8 +33,8 @@ When removal completes, `RestartRequired` is reported as true when it deleted re
 
 With `LogAnalyticsWorkspaceResourceId` set during deployment, diagnostic settings forward JobLogs and JobStreams to the selected existing workspace and deploy the Azure Monitor workbook. The dashboard shows:
 
-- **Current top offenders** — the most recent successful scan for every VM, sorted by current ghost count.
-- **Cumulative offenders** — each VM’s total ghost observations and scans with ghosts, retaining VMs that are now clean so recurrence remains visible.
+- **Current top offenders** — the most recent successful scan for every VM, sorted by current ghost count, with the power state most recently observed by the scheduled run.
+- **Cumulative offenders** — each VM’s total ghost observations and scans with ghosts, retaining VMs that are now clean so recurrence remains visible, plus the most recently observed power state.
 - **Efficacy** — removal job count, ghost NICs presented to removal, registry paths actually removed, and a weekly removal trend.
 
 Cumulative ghost observations are not deduplicated devices; scanning an uncleared VM again adds another observation by design. The workbook’s source is Azure Monitor log delivery, so its initial data can take a few minutes to appear after a completed Automation job.
