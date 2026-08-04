@@ -4,8 +4,8 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with a system-assigned managed identity and publishes one PowerShell runbook: `Invoke-GhostNicMaintenance`. The runbook uses Azure VM Run Command, so it does not require a Hybrid Runbook Worker or credentials stored in Automation.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-5.json)
-[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-5.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-6.json)
+[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260803-6.json)
 
 ## What it does
 
@@ -21,7 +21,7 @@ Microsoft describes this as a design behavior of Accelerated Networking after de
 
 Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, and enter one target resource-group ID or multiple IDs separated by commas. The wizard automatically generates the Automation account and a dedicated Log Analytics workspace, imports the runbook, deploys the workbook, and grants its managed identity **Virtual Machine Contributor** on each selected target group.
 
-The deploying identity needs permission to create the Automation account, workspace, workbook, and resource-group role assignments. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
+The deploying identity needs permission to create the Automation account, workspace, workbook, managed identity, deployment script, and role assignments. A narrowly scoped helper identity links the runbook to its schedule without creating a duplicate association on redeployment. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
 
 For another VM, add its resource ID to the `GhostNicTargetVmResourceIds` Automation variable and grant the Automation identity the same VM-scoped role on that VM. Do not grant subscription-wide authority merely for convenience.
 
@@ -70,7 +70,7 @@ The target resource groups are stored separately in `GhostNicTargetResourceGroup
 
 ### Daily schedule
 
-Deployment creates and links an enabled Automation schedule named `GhostNic-Daily-Detect-1230`. It runs every day at **12:30 PM Pacific time** (`America/Los_Angeles`, including daylight-saving adjustments) with `Operation=Detect`. An administrator can change or disable it under **Automation Account → Shared Resources → Schedules**.
+Deployment creates and links an enabled Automation schedule named `GhostNic-Daily-Detect-1230`. It runs every day at **12:30 PM Pacific time** (`America/Los_Angeles`, including daylight-saving adjustments) with `Operation=Detect`. The deployment checks for an existing runbook/schedule association before creating one, so the same environment can be redeployed safely. An administrator can change or disable it under **Automation Account → Shared Resources → Schedules**.
 
 Before issuing VM Run Command, the runbook checks Azure power state in batches. VMs that are not `VM running` are recorded as `OfflineSkipped` with `CommandIssued=false`, avoiding the Run Command timeout for stopped or deallocated hosts.
 
