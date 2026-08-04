@@ -4,8 +4,8 @@ Ghost NIC Hunter is a small vanRoojen LLC Azure utility for detecting and, only 
 
 It deploys an Azure Automation account with managed identities and publishes the `Invoke-GhostNicMaintenance` PowerShell runbook. A small `Initialize-GhostNicSchedule` bootstrap runbook safely creates the daily schedule association, then the maintenance runbook uses Azure VM Run Command without a Hybrid Runbook Worker or credentials stored in Automation.
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-5.json)
-[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-5.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-6.json)
+[![Deploy to Azure Gov](deploy/deploytoazuregov.svg)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FvanRoojen-LLC%2FghostNIChunter%2Fmain%2Fdeploy%2Fazuredeploy-20260804-6.json)
 
 ## What it does
 
@@ -98,7 +98,7 @@ For a job’s output, use `Get-AzAutomationJobOutput` and `Get-AzAutomationJobOu
 
 ## Dashboard
 
-The optional Azure Monitor Workbook has four evidence views: current total/VM count, a current top-offenders table (newest successful scan per VM), a cumulative offender table (including cleaned VMs), and weekly registry-path removals. Both VM tables merge the scan records with Azure Resource Graph power state whenever the workbook refreshes. The separate `Last-run status` column remains visible as a fallback for a deleted VM, a VM outside the viewer's Resource Graph access, or a live-status query that cannot return a match. The cumulative ranking intentionally retains repeated findings so a recurring VM-level cause is visible.
+The optional Azure Monitor Workbook has four evidence views: current total/VM count, a current top-offenders table (newest successful scan per VM), a cumulative offender table (including cleaned VMs), and weekly ghost-NIC removals. Structured removal results contribute their reported removal counts even when final safety validation returns `SafetyAbort` or `PartialFailure`; those outcomes remain identified separately and are not presented as successful remediation. Both VM tables merge the scan records with Azure Resource Graph power state whenever the workbook refreshes. The separate `Last-run status` column remains visible as a fallback for a deleted VM, a VM outside the viewer's Resource Graph access, or a live-status query that cannot return a match. The cumulative ranking intentionally retains repeated findings so a recurring VM-level cause is visible.
 
 ## Safety and scope
 
