@@ -12,12 +12,12 @@ var runbookName = 'Invoke-GhostNicMaintenance'
 var dailyScheduleName = 'GhostNic-Daily-Detect-1230'
 var dailyScheduleTimeZone = 'America/Los_Angeles'
 var dailyScheduleStartTime = '${substring(dateTimeAdd(deploymentTime, 'P1D'), 0, 10)}T12:30:00'
-var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803-4.ps1'
+var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260803-5.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: '20260803-4'
+  sourceRevision: '20260803-5'
 }
 
 resource automationAccount 'Microsoft.Automation/automationAccounts@2023-11-01' = {
