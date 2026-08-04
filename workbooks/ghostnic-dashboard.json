@@ -12,12 +12,35 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\n| where Succeeded\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId\n| summarize ['Current ghost NICs'] = sum(GhostedCount), ['VMs with ghosts'] = countif(GhostedCount > 0), ['VMs scanned'] = count()",
+        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\n| where Succeeded\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId\n| summarize CurrentGhostNics = sum(GhostedCount), VmsWithGhosts = countif(GhostedCount > 0), VmsScanned = count()\n| project Metrics = pack_array(pack('Metric', 'Current ghost NICs', 'Value', CurrentGhostNics), pack('Metric', 'VMs with ghosts', 'Value', VmsWithGhosts), pack('Metric', 'VMs scanned', 'Value', VmsScanned))\n| mv-expand Metrics\n| project Metric = tostring(Metrics.Metric), Value = tolong(Metrics.Value)",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "visualization": "tiles",
-        "tileSettings": { "showBorder": false, "size": "small" }
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Metric",
+            "formatter": 1,
+            "formatOptions": {
+              "showIcon": true
+            }
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 12,
+            "formatOptions": {
+              "showIcon": true
+            },
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "decimal",
+                "maximumFractionDigits": 0
+              }
+            }
+          },
+          "showBorder": false
+        }
       },
       "name": "current-summary"
     },
@@ -25,12 +48,35 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount)\n| where Succeeded and Operation == 'Remove'\n| summarize ['Removal jobs'] = count(), ['Ghost NICs presented for removal'] = sum(GhostedCount), ['Registry paths removed'] = sum(RemovedCount), ['VMs remediated'] = dcount(VmResourceId)",
+        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount)\n| where Succeeded and Operation == 'Remove'\n| summarize RemovalJobs = count(), GhostCandidates = sum(GhostedCount), PathsRemoved = sum(RemovedCount), VmsRemediated = dcount(VmResourceId)\n| project Metrics = pack_array(pack('Metric', 'Removal jobs', 'Value', RemovalJobs), pack('Metric', 'Ghost NICs presented', 'Value', GhostCandidates), pack('Metric', 'Registry paths removed', 'Value', PathsRemoved), pack('Metric', 'VMs remediated', 'Value', VmsRemediated))\n| mv-expand Metrics\n| project Metric = tostring(Metrics.Metric), Value = tolong(Metrics.Value)",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "visualization": "tiles",
-        "tileSettings": { "showBorder": false, "size": "small" }
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Metric",
+            "formatter": 1,
+            "formatOptions": {
+              "showIcon": true
+            }
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 12,
+            "formatOptions": {
+              "showIcon": true
+            },
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "decimal",
+                "maximumFractionDigits": 0
+              }
+            }
+          },
+          "showBorder": false
+        }
       },
       "name": "removal-summary"
     },
@@ -74,7 +120,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), RemovedCount = toint(event.RemovedCount)\n| where Succeeded and Operation == 'Remove'\n| summarize ['Registry paths removed'] = sum(RemovedCount) by bin(TimeGenerated, 7d)\n| render timechart",
+        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), RemovedCount = toint(event.RemovedCount)\n| where Succeeded and Operation == 'Remove'\n| union (print TimeGenerated = ago(1s), RemovedCount = toint(0))\n| make-series ['Registry paths removed'] = sum(RemovedCount) default = 0 on TimeGenerated from ago(30d) to now() step 7d\n| mv-expand TimeGenerated to typeof(datetime), ['Registry paths removed'] to typeof(long)\n| render timechart",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
