@@ -95,38 +95,81 @@
       "name": "overview"
     },
     {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Resources\n| where type =~ 'microsoft.compute/virtualmachines'\n| extend VmKey = tolower(id), PowerStateCode = tostring(properties.extended.instanceView.powerState.code)\n| extend LiveVmStatus = iff(PowerStateCode startswith 'PowerState/', strcat('VM ', substring(PowerStateCode, strlen('PowerState/'))), 'Unknown')\n| project VmKey, LiveVmStatus",
+        "size": 0,
+        "queryType": 1,
+        "resourceType": "microsoft.resourcegraph/resources",
+        "crossComponentResources": [ "value::all" ],
+        "visualization": "table",
+        "gridSettings": { "rowLimit": 1000 }
+      },
+      "conditionalVisibility": { "parameterName": "_", "comparison": "isEqualTo", "value": "_" },
+      "name": "live-vm-status"
+    },
+    {
       "type": 1,
-      "content": { "json": "## Current top offenders\n\nLatest successful scan only. VM status is the most recent state observed by the scheduled run, not a live portal readout. Run Detect before removing anything." },
+      "content": { "json": "## Current top offenders\n\nLatest successful scan only. **VM status** is read from Azure Resource Graph when the workbook refreshes; **Last-run status** is retained as a fallback. Run Detect before removing anything." },
       "name": "current-heading"
     },
     {
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let events = union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), ValidCount = toint(event.ValidCount), LastScanUtc = todatetime(event.DetectedAtUtc), PowerState = tostring(event.PowerState);\nlet latestStatus = events\n| extend VmStatus = iff(isnotempty(PowerState), PowerState, iff(Succeeded and isnotnull(GhostedCount), 'VM running', ''))\n| where isnotempty(VmStatus)\n| summarize arg_max(TimeGenerated, VmStatus) by VmResourceId\n| project VmResourceId, VmStatus;\nevents\n| where Succeeded and isnotnull(GhostedCount)\n| summarize arg_max(TimeGenerated, GhostedCount, ValidCount, LastScanUtc) by VmResourceId\n| where GhostedCount > 0\n| join kind=leftouter latestStatus on VmResourceId\n| extend VmStatus = coalesce(VmStatus, 'Not recorded')\n| order by GhostedCount desc, LastScanUtc asc\n| project VM = VmResourceId, ['VM status'] = VmStatus, ['Ghost NICs now'] = GhostedCount, ['Valid NICs'] = ValidCount, ['Last scan UTC'] = LastScanUtc",
+        "query": "let events = union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), ValidCount = toint(event.ValidCount), LastScanUtc = todatetime(event.DetectedAtUtc), PowerState = tostring(event.PowerState);\nlet latestStatus = events\n| extend LastRunVmStatus = iff(isnotempty(PowerState), PowerState, iff(Succeeded and isnotnull(GhostedCount), 'VM running', ''))\n| where isnotempty(LastRunVmStatus)\n| summarize arg_max(TimeGenerated, LastRunVmStatus) by VmResourceId\n| project VmResourceId, LastRunVmStatus;\nevents\n| where Succeeded and isnotnull(GhostedCount)\n| summarize arg_max(TimeGenerated, GhostedCount, ValidCount, LastScanUtc) by VmResourceId\n| where GhostedCount > 0\n| join kind=leftouter latestStatus on VmResourceId\n| extend VmKey = tolower(VmResourceId), LastRunVmStatus = coalesce(LastRunVmStatus, 'Not recorded')\n| order by GhostedCount desc, LastScanUtc asc\n| project VmKey, VM = VmResourceId, LastRunVmStatus, GhostNicsNow = GhostedCount, ValidNics = ValidCount, LastScanUTC = LastScanUtc",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "visualization": "table",
-        "gridSettings": { "filter": true }
+        "gridSettings": { "filter": true, "rowLimit": 1000 }
+      },
+      "conditionalVisibility": { "parameterName": "_", "comparison": "isEqualTo", "value": "_" },
+      "name": "current-top-offenders-source"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "{\"version\":\"Merge/1.0\",\"merges\":[{\"id\":\"58e75e87-19d9-4ff9-8c12-b714249a62fd\",\"mergeType\":\"leftouter\",\"leftTable\":\"current-top-offenders-source\",\"rightTable\":\"live-vm-status\",\"leftColumn\":\"VmKey\",\"rightColumn\":\"VmKey\"}],\"projectRename\":[{\"originalName\":\"[current-top-offenders-source].VM\",\"mergedName\":\"VM\",\"fromId\":\"58e75e87-19d9-4ff9-8c12-b714249a62fd\"},{\"originalName\":\"[live-vm-status].LiveVmStatus\",\"mergedName\":\"VM status\",\"fromId\":\"58e75e87-19d9-4ff9-8c12-b714249a62fd\"},{\"originalName\":\"[current-top-offenders-source].LastRunVmStatus\",\"mergedName\":\"Last-run status\",\"fromId\":\"58e75e87-19d9-4ff9-8c12-b714249a62fd\"},{\"originalName\":\"[current-top-offenders-source].GhostNicsNow\",\"mergedName\":\"Ghost NICs now\",\"fromId\":\"58e75e87-19d9-4ff9-8c12-b714249a62fd\"},{\"originalName\":\"[current-top-offenders-source].ValidNics\",\"mergedName\":\"Valid NICs\",\"fromId\":\"58e75e87-19d9-4ff9-8c12-b714249a62fd\"},{\"originalName\":\"[current-top-offenders-source].LastScanUTC\",\"mergedName\":\"Last scan UTC\",\"fromId\":\"58e75e87-19d9-4ff9-8c12-b714249a62fd\"},{\"originalName\":\"[current-top-offenders-source].VmKey\"},{\"originalName\":\"[current-top-offenders-source].TableName\"},{\"originalName\":\"[live-vm-status].VmKey\"}]}",
+        "size": 0,
+        "queryType": 7,
+        "visualization": "table",
+        "showRefreshButton": true,
+        "gridSettings": { "filter": true, "rowLimit": 1000 }
       },
       "name": "current-top-offenders"
     },
     {
       "type": 1,
-      "content": { "json": "## History and remediation\n\nRepeated findings indicate recurrence; cleaned VMs remain in history. VM status is the most recent state observed by the scheduled run." },
+      "content": { "json": "## History and remediation\n\nRepeated findings indicate recurrence; cleaned VMs remain in history. **VM status** is refreshed from Azure Resource Graph; **Last-run status** remains visible for deleted or inaccessible VMs." },
       "name": "history-heading"
     },
     {
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let events = union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), Operation = tostring(event.Operation), PowerState = tostring(event.PowerState);\nlet latestStatus = events\n| extend VmStatus = iff(isnotempty(PowerState), PowerState, iff(Succeeded and isnotnull(GhostedCount), 'VM running', ''))\n| where isnotempty(VmStatus)\n| summarize arg_max(TimeGenerated, VmStatus) by VmResourceId\n| project VmResourceId, VmStatus;\nevents\n| where Succeeded and isnotnull(GhostedCount)\n| summarize ['Cumulative ghost observations'] = sum(GhostedCount), ['Scans with ghosts'] = countif(GhostedCount > 0), ['Registry paths removed'] = sum(RemovedCount), ['Removal jobs'] = countif(Operation == 'Remove') by VmResourceId\n| join kind=leftouter latestStatus on VmResourceId\n| extend VmStatus = coalesce(VmStatus, 'Not recorded')\n| order by ['Cumulative ghost observations'] desc, ['Scans with ghosts'] desc\n| project VM = VmResourceId, ['VM status'] = VmStatus, ['Cumulative ghosts'] = ['Cumulative ghost observations'], ['Scans with ghosts'] = ['Scans with ghosts'], ['Paths removed'] = ['Registry paths removed'], ['Removal jobs'] = ['Removal jobs']",
+        "query": "let events = union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), Operation = tostring(event.Operation), PowerState = tostring(event.PowerState);\nlet latestStatus = events\n| extend LastRunVmStatus = iff(isnotempty(PowerState), PowerState, iff(Succeeded and isnotnull(GhostedCount), 'VM running', ''))\n| where isnotempty(LastRunVmStatus)\n| summarize arg_max(TimeGenerated, LastRunVmStatus) by VmResourceId\n| project VmResourceId, LastRunVmStatus;\nevents\n| where Succeeded and isnotnull(GhostedCount)\n| summarize CumulativeGhosts = sum(GhostedCount), ScansWithGhosts = countif(GhostedCount > 0), PathsRemoved = sum(RemovedCount), RemovalJobs = countif(Operation == 'Remove') by VmResourceId\n| join kind=leftouter latestStatus on VmResourceId\n| extend VmKey = tolower(VmResourceId), LastRunVmStatus = coalesce(LastRunVmStatus, 'Not recorded')\n| order by CumulativeGhosts desc, ScansWithGhosts desc\n| project VmKey, VM = VmResourceId, LastRunVmStatus, CumulativeGhosts, ScansWithGhosts, PathsRemoved, RemovalJobs",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "visualization": "table",
-        "gridSettings": { "filter": true }
+        "gridSettings": { "filter": true, "rowLimit": 1000 }
+      },
+      "conditionalVisibility": { "parameterName": "_", "comparison": "isEqualTo", "value": "_" },
+      "name": "cumulative-offenders-source"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "{\"version\":\"Merge/1.0\",\"merges\":[{\"id\":\"32a40e62-8a68-49ce-9a94-595a752b732e\",\"mergeType\":\"leftouter\",\"leftTable\":\"cumulative-offenders-source\",\"rightTable\":\"live-vm-status\",\"leftColumn\":\"VmKey\",\"rightColumn\":\"VmKey\"}],\"projectRename\":[{\"originalName\":\"[cumulative-offenders-source].VM\",\"mergedName\":\"VM\",\"fromId\":\"32a40e62-8a68-49ce-9a94-595a752b732e\"},{\"originalName\":\"[live-vm-status].LiveVmStatus\",\"mergedName\":\"VM status\",\"fromId\":\"32a40e62-8a68-49ce-9a94-595a752b732e\"},{\"originalName\":\"[cumulative-offenders-source].LastRunVmStatus\",\"mergedName\":\"Last-run status\",\"fromId\":\"32a40e62-8a68-49ce-9a94-595a752b732e\"},{\"originalName\":\"[cumulative-offenders-source].CumulativeGhosts\",\"mergedName\":\"Cumulative ghosts\",\"fromId\":\"32a40e62-8a68-49ce-9a94-595a752b732e\"},{\"originalName\":\"[cumulative-offenders-source].ScansWithGhosts\",\"mergedName\":\"Scans with ghosts\",\"fromId\":\"32a40e62-8a68-49ce-9a94-595a752b732e\"},{\"originalName\":\"[cumulative-offenders-source].PathsRemoved\",\"mergedName\":\"Paths removed\",\"fromId\":\"32a40e62-8a68-49ce-9a94-595a752b732e\"},{\"originalName\":\"[cumulative-offenders-source].RemovalJobs\",\"mergedName\":\"Removal jobs\",\"fromId\":\"32a40e62-8a68-49ce-9a94-595a752b732e\"},{\"originalName\":\"[cumulative-offenders-source].VmKey\"},{\"originalName\":\"[cumulative-offenders-source].TableName\"},{\"originalName\":\"[live-vm-status].VmKey\"}]}",
+        "size": 0,
+        "queryType": 7,
+        "visualization": "table",
+        "showRefreshButton": true,
+        "gridSettings": { "filter": true, "rowLimit": 1000 }
       },
       "name": "cumulative-offenders"
     },

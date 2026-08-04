@@ -33,15 +33,16 @@ When removal completes, `RestartRequired` is reported as true when it deleted re
 
 With `LogAnalyticsWorkspaceResourceId` set during deployment, diagnostic settings forward JobLogs and JobStreams to the selected existing workspace and deploy the Azure Monitor workbook. The dashboard shows:
 
-- **Current top offenders** — the most recent successful scan for every VM, sorted by current ghost count, with the power state most recently observed by the scheduled run.
-- **Cumulative offenders** — each VM’s total ghost observations and scans with ghosts, retaining VMs that are now clean so recurrence remains visible, plus the most recently observed power state.
+- **Current top offenders** — the most recent successful scan for every VM, sorted by current ghost count, merged with power state from Azure Resource Graph at workbook refresh time.
+- **Cumulative offenders** — each VM’s total ghost observations and scans with ghosts, retaining VMs that are now clean so recurrence remains visible, plus refresh-time Resource Graph power state.
 - **Efficacy** — removal job count, ghost NICs presented to removal, registry paths actually removed, and a weekly removal trend.
 
-Cumulative ghost observations are not deduplicated devices; scanning an uncleared VM again adds another observation by design. The workbook’s source is Azure Monitor log delivery, so its initial data can take a few minutes to appear after a completed Automation job.
+Cumulative ghost observations are not deduplicated devices; scanning an uncleared VM again adds another observation by design. `VM status` is the Resource Graph value at workbook refresh, while `Last-run status` is the state recorded by Automation and remains available when the live lookup has no match. The scan data still depends on Azure Monitor log delivery, so new detection results can take a few minutes to appear after a completed Automation job.
 
 ## Failure handling
 
 - A bad resource ID or a target in a different subscription fails before execution.
+- In the portal Start pane, enter `TargetVmResourceIds` as one resource ID, a comma/semicolon/newline-separated string, or a JSON string array. The runbook intentionally exposes this as a string so a single ID cannot fail Azure Automation parameter binding before the job starts.
 - A target without Run Command permission, a stopped/deallocated VM, or an unhealthy VM agent produces a per-VM failure record; it does not make the runbook silently succeed.
 - A removal without both explicit confirmation values is rejected before any VM command is sent.
 - If the cleanup fails partway through, use the VM recovery point/change record and investigate with Microsoft support guidance; do not rerun removal blindly.
