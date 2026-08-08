@@ -21,7 +21,7 @@ Microsoft describes this as a design behavior of Accelerated Networking after de
 
 Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, and enter one target resource-group ID or multiple IDs separated by commas. The wizard automatically generates the Automation account and a dedicated Log Analytics workspace, imports the runbooks, deploys the workbook, and grants its managed identity **Virtual Machine Contributor** on each selected target group. Target groups can span subscriptions in the same tenant when the deploying identity can create role assignments at every selected scope.
 
-The **Encrypt Automation Variables** choice defaults to `true`. Keep it enabled for the normal policy-compliant deployment. Choosing `false` creates normal variables whose values remain readable in the portal, but a policy assignment using the strict `Deny` effect for unencrypted Automation variables will reject that deployment. Azure does not allow an existing variable's encryption mode to be changed in place; use the migration workflow below before switching an existing plaintext installation to encrypted variables. See [Manage variables in Azure Automation](https://learn.microsoft.com/en-us/azure/automation/shared-resources/variables).
+The **Encrypt Automation Variables** choice defaults to `true`. Keep it enabled for the recommended policy-compliant deployment, or choose `false` when operators intentionally need portal-readable variables and policy permits them. See [Automation variable encryption](#automation-variable-encryption) before selecting a mode for an existing installation.
 
 The deploying identity needs permission to create the Automation account, workspace, workbook, managed identity, Automation jobs, and role assignments. A helper user-assigned identity has Automation Contributor only on the generated Automation account; a one-time bootstrap job uses it to link the runbook to its schedule without creating a duplicate association. This does not use Deployment Scripts, temporary storage accounts, or container instances. The portal deployment does not run remediation; start the imported runbook with its safe `Detect` default after it completes.
 
@@ -51,6 +51,99 @@ Connect-AzAccount
 The Bicep deployment creates the Automation account, managed identity, seven variables, monitoring resources, and workbook. The script imports and publishes both operator-facing runbooks, then grants the identity its selected resource-group scopes.
 
 Supplying `LogAnalyticsWorkspaceResourceId` uses an existing workspace. If omitted, the deployment creates a tagged 30-day Log Analytics workspace, configures Automation `JobLogs` and `JobStreams`, and deploys the **Ghost NIC Hunter dashboard** workbook automatically.
+
+## Automation variable encryption
+
+The deployment creates seven Ghost NIC Hunter Automation variables. The `Encrypt Automation Variables` portal option and the CLI `EncryptAutomationVariables` parameter apply one storage mode to all seven when they are first created.
+
+| Deployment choice | Storage and visibility | When to use it |
+|---|---|---|
+| `true` (default) | Encrypted. Values cannot be viewed in the Azure portal or retrieved by external PowerShell after creation; they can still be read by the maintenance runbook and updated by `Configure-GhostNicHunter`. | Recommended and compatible with the Azure Policy definition **Automation account variables should be encrypted**, including assignments using `Deny`. |
+| `false` | Normal. Values remain readable and editable in the Azure portal. | Use only when operator visibility is required and the applicable policy allows unencrypted Automation variables. |
+
+Azure fixes the encryption mode when each variable is created. Redeploying with the opposite choice does not convert an existing variable and can fail because its encryption state is immutable. See [Manage variables in Azure Automation](https://learn.microsoft.com/en-us/azure/automation/shared-resources/variables).
+
+### Conversion options
+
+| Current state | Desired state | Supported path |
+|---|---|---|
+| New installation | Encrypted | Deploy with `Encrypt Automation Variables=true`, which is the default. |
+| New installation | Normal | Deploy with `Encrypt Automation Variables=false`, provided policy permits it. |
+| Existing normal variables | Encrypted | Use the guarded conversion helper below, redeploy with encryption enabled, then restore customized behavior settings. |
+| Existing encrypted variables | Normal | There is no automatic reverse conversion because external PowerShell cannot read the encrypted values. The safest option is a new deployment with normal variables and explicitly supplied replacement settings. |
+| Existing variables | Same mode | Redeploy with the existing choice. Remember that deployment resets the six behavior settings to their documented defaults. |
+
+### Convert normal variables to encrypted variables
+
+The helper performs only normal-to-encrypted conversion. It blocks while any Automation job is nonterminal, pauses the enabled daily schedule, keeps normal values in process memory only, removes obsolete persistent variables, recreates the seven current variables as encrypted, verifies them, and restores the schedule. It does not print variable values. An interrupted conversion can be rerun safely; it converts only variables that remain normal.
+
+1. Record any customized values for the six behavior settings in an approved change record. The redeployment in step 5 resets them to defaults, and external tools cannot read them after encryption.
+2. Confirm no maintenance or configuration job should be running during the conversion.
+3. Sign in to the subscription containing the Automation account and review the conversion plan:
+
+```powershell
+Connect-AzAccount
+
+./deploy/Convert-GhostNicHunterVariablesToEncrypted.ps1 `
+  -SubscriptionId '<automation-subscription-id>' `
+  -ResourceGroupName '<automation-resource-group>' `
+  -AutomationAccountName 'vr-ghostnic-prod' `
+  -ConfirmMigration `
+  -WhatIf
+```
+
+4. Apply the conversion. PowerShell presents a final confirmation prompt before it deletes and recreates any normal variables:
+
+```powershell
+./deploy/Convert-GhostNicHunterVariablesToEncrypted.ps1 `
+  -SubscriptionId '<automation-subscription-id>' `
+  -ResourceGroupName '<automation-resource-group>' `
+  -AutomationAccountName 'vr-ghostnic-prod' `
+  -ConfirmMigration
+```
+
+5. Redeploy Ghost NIC Hunter with the same Automation account and target resource groups, using the portal wizard with **Encrypt Automation Variables** enabled or rerunning the [CLI deployment](#cli-deployment) with `EncryptAutomationVariables=$true`.
+6. Reapply the recorded behavior settings using [Change persistent behavior](#change-persistent-behavior) with `ApplyChanges=$true`.
+7. Verify that exactly seven current Ghost NIC Hunter variables remain, all report `Encrypted=True`, and obsolete variables are absent:
+
+```powershell
+Get-AzAutomationVariable `
+  -ResourceGroupName '<automation-resource-group>' `
+  -AutomationAccountName 'vr-ghostnic-prod' |
+  Where-Object Name -Like 'GhostNic*' |
+  Select-Object Name, @{
+    Name = 'Encrypted'
+    Expression = {
+      if ($_.PSObject.Properties['Encrypted']) { [bool]$_.Encrypted } else { [bool]$_.IsEncrypted }
+    }
+  }
+```
+
+8. Confirm `GhostNic-Daily-Detect-1230` is enabled and run a `Detect` job before scheduling any removal work.
+
+If conversion fails, the helper leaves the schedule disabled and reports the failed stage without outputting values. Resolve the Azure error and rerun the same command; mixed encrypted/normal state from the interrupted attempt is supported. After a successful retry, verify and, if necessary, re-enable the schedule manually:
+
+```powershell
+Set-AzAutomationSchedule `
+  -ResourceGroupName '<automation-resource-group>' `
+  -AutomationAccountName 'vr-ghostnic-prod' `
+  -Name 'GhostNic-Daily-Detect-1230' `
+  -IsEnabled $true
+```
+
+### Convert encrypted variables to normal variables
+
+Encrypted-to-normal conversion is intentionally not automated. Azure does not allow external PowerShell to retrieve encrypted variable values, so an in-place conversion cannot safely preserve them.
+
+The recommended path is:
+
+1. Confirm that policy allows normal Automation variables. A `Deny` assignment for unencrypted variables will block the deployment.
+2. Create a separate Ghost NIC Hunter deployment in another resource group or with a distinct Automation account name, using `Encrypt Automation Variables=false`.
+3. Supply the intended target groups and explicitly reapply all six behavior settings from an approved source.
+4. Run and review a `Detect` job from the replacement deployment.
+5. Only after validation, disable the old schedule and retire the old Automation account through the normal change-control process.
+
+An in-place reverse conversion requires deleting all seven encrypted variables and recreating them with complete replacement values. Do not use that path unless the values are available independently and an outage is acceptable.
 
 ## Start a job
 
@@ -86,27 +179,6 @@ Start-AzAutomationRunbook -ResourceGroupName '<automation-rg>' -AutomationAccoun
 ```
 
 Target scope is not changed by this runbook because target changes also require matching Azure RBAC changes. Redeploying the template resets the six persistent behavior values to their documented defaults, so reapply any intended custom configuration afterward. The runbooks use Az modules only; do not import AzureRM modules into the same runbook session.
-
-### Migrate existing plaintext variables
-
-Encryption is immutable after a variable is created. Before migrating, record any customized values for the six behavior settings in your approved change record; the required redeployment resets them to defaults, and encrypted values cannot be read back through external PowerShell. Then run `deploy/Convert-GhostNicHunterVariablesToEncrypted.ps1` before redeploying with encryption enabled. The helper refuses every nonterminal Automation job, pauses an enabled daily schedule, holds only the normal values in process memory, removes the obsolete `GhostNicOperation`, `GhostNicConfirmRemoval`, and persistent `GhostNicTargetVmResourceIds` assets, recreates the seven current variables encrypted, and verifies the result before restoring the schedule. It can safely resume a mixed state left by an interrupted prior migration by converting only the remaining normal variables. It does not print values, and it leaves the schedule disabled if migration fails. Review its WhatIf output first:
-
-```powershell
-./deploy/Convert-GhostNicHunterVariablesToEncrypted.ps1 `
-  -SubscriptionId '<subscription-id>' `
-  -ResourceGroupName '<automation-resource-group>' `
-  -AutomationAccountName 'vr-ghostnic-prod' `
-  -ConfirmMigration `
-  -WhatIf
-
-./deploy/Convert-GhostNicHunterVariablesToEncrypted.ps1 `
-  -SubscriptionId '<subscription-id>' `
-  -ResourceGroupName '<automation-resource-group>' `
-  -AutomationAccountName 'vr-ghostnic-prod' `
-  -ConfirmMigration
-```
-
-Redeploy with `EncryptAutomationVariables=$true`, then immediately reapply the recorded behavior settings through `Configure-GhostNicHunter`. If a failed migration disabled the schedule, verify the retry result and re-enable the schedule manually. The helper only supports plaintext-to-encrypted migration. An encrypted variable cannot be read externally for a reverse migration, so switching to normal variables requires deleting and recreating them with complete replacement values.
 
 ### Daily schedule
 
