@@ -16,8 +16,11 @@ param logAnalyticsWorkspaceResourceId string = ''
 @description('Optional name for the generated Log Analytics workspace.')
 param logAnalyticsWorkspaceName string = ''
 
-@description('Target VM resource-group IDs used by the runbook for discovery.')
+@description('Target VM resource-group IDs used by the runbook for discovery. IDs can span subscriptions accessible to the Automation identity.')
 param targetResourceGroupIds array = []
+
+@description('Initial storage mode for Ghost NIC Hunter Automation variables. Keep enabled to satisfy encryption policies; disable only when operators must read values in the portal. Existing variables must be deleted and recreated to change modes.')
+param encryptAutomationVariables bool = true
 
 @description('Friendly display name for the Azure Monitor workbook.')
 param workbookDisplayName string = 'Ghost NIC Hunter dashboard'
@@ -43,14 +46,12 @@ resource targetResourceGroups 'Microsoft.Automation/automationAccounts/variables
   name: 'GhostNicTargetResourceGroupIds'
   properties: {
     description: 'Target resource-group IDs, one per line.'
-    isEncrypted: false
+    isEncrypted: encryptAutomationVariables
     value: '"${join(targetResourceGroupIds, '\n')}"'
   }
 }
 
 var runtimeVariableDefinitions = [
-  { name: 'GhostNicOperation', description: 'Default mode: Detect or Remove.', value: '"Detect"' }
-  { name: 'GhostNicConfirmRemoval', description: 'Must be true, together with Operation=Remove, before remediation is allowed.', value: 'false' }
   { name: 'GhostNicMaximumCandidateCount', description: 'Safety ceiling for confirmed ghost NIC candidates on one VM.', value: '1000' }
   { name: 'GhostNicExclusionTagName', description: 'VM tag used to exclude scanning or removal.', value: '"ghostNicHunterExclusions"' }
   { name: 'GhostNicScanExclusionValues', description: 'Comma-separated tag values that prevent scanning.', value: '"scan,all"' }
@@ -64,7 +65,7 @@ resource runtimeVariables 'Microsoft.Automation/automationAccounts/variables@202
   name: definition.name
   properties: {
     description: definition.description
-    isEncrypted: false
+    isEncrypted: encryptAutomationVariables
     value: definition.value
   }
 }]
@@ -120,5 +121,6 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = {
 
 output automationAccountId string = automationAccount.id
 output principalId string = automationAccount.identity.principalId
+output automationVariablesEncrypted bool = encryptAutomationVariables
 output workspaceId string = workspaceId
 output workbookId string = workbook.id

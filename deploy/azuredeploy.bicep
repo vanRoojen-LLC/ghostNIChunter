@@ -1,7 +1,10 @@
 targetScope = 'resourceGroup'
 
-@description('Comma-separated full resource IDs of target resource groups. The Automation identity receives Virtual Machine Contributor on each group.')
+@description('Comma-separated full resource IDs of target resource groups. The Automation identity receives Virtual Machine Contributor on each group, including groups in other accessible subscriptions.')
 param targetResourceGroupIds string
+
+@description('Initial storage mode for Ghost NIC Hunter Automation variables. Keep enabled to satisfy encryption policies; disable only when operators must read values in the portal. Existing variables must be deleted and recreated to change modes.')
+param encryptAutomationVariables bool = true
 
 @description('Deployment timestamp used to choose a future first run for the daily schedule.')
 param deploymentTime string = utcNow()
@@ -9,6 +12,7 @@ param deploymentTime string = utcNow()
 var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(subscription().id, resourceGroup().id, 'ghostnic'), 10)}')
 var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
 var runbookName = 'Invoke-GhostNicMaintenance'
+var configurationRunbookName = 'Configure-GhostNicHunter'
 var dailyScheduleName = 'GhostNic-Daily-Detect-1230'
 var dailyScheduleTimeZone = 'America/Los_Angeles'
 var dailyScheduleStartTime = '${substring(dateTimeAdd(deploymentTime, 'P1D'), 0, 10)}T12:30:00'
@@ -16,12 +20,13 @@ var dailyJobScheduleId = guid(automationAccount.id, runbookName, dailyScheduleNa
 var scheduleBootstrapRunbookName = 'Initialize-GhostNicSchedule'
 var scheduleBootstrapRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20260803-7.ps1'
 var automationContributorRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f353d9bd-d4a6-484e-a77a-8050b599b867')
-var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260804-4.ps1'
+var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260806.ps1'
+var configurationRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Configure-GhostNicHunter-20260806.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: '20260804-8'
+  sourceRevision: '20260806'
 }
 
 resource scheduleLinkerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -74,14 +79,12 @@ resource configuredTargets 'Microsoft.Automation/automationAccounts/variables@20
   name: 'GhostNicTargetResourceGroupIds'
   properties: {
     description: 'One or more target resource-group IDs, separated by commas, semicolons, or new lines.'
-    isEncrypted: false
+    isEncrypted: encryptAutomationVariables
     value: '"${join(resolvedTargetResourceGroupIds, '\n')}"'
   }
 }
 
 var runtimeVariableDefinitions = [
-  { name: 'GhostNicOperation', description: 'Default mode: Detect or Remove.', value: '"Detect"' }
-  { name: 'GhostNicConfirmRemoval', description: 'Must be true, together with Operation=Remove, before remediation is allowed.', value: 'false' }
   { name: 'GhostNicMaximumCandidateCount', description: 'Safety ceiling for confirmed ghost NIC candidates on one VM.', value: '1000' }
   { name: 'GhostNicExclusionTagName', description: 'VM tag used to exclude scanning or removal.', value: '"ghostNicHunterExclusions"' }
   { name: 'GhostNicScanExclusionValues', description: 'Comma-separated tag values that prevent scanning.', value: '"scan,all"' }
@@ -95,7 +98,7 @@ resource runtimeVariables 'Microsoft.Automation/automationAccounts/variables@202
   name: definition.name
   properties: {
     description: definition.description
-    isEncrypted: false
+    isEncrypted: encryptAutomationVariables
     value: definition.value
   }
 }]
@@ -129,6 +132,27 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
     logVerbose: true
     publishContentLink: {
       uri: versionedRunbookUri
+      version: '1.0.0.0'
+    }
+  }
+}
+
+resource configurationRunbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' = {
+  parent: automationAccount
+  name: configurationRunbookName
+  location: resourceGroup().location
+  dependsOn: [
+    configuredTargets
+    runtimeVariables
+  ]
+  tags: union(tags, { component: 'configuration' })
+  properties: {
+    description: 'Safely validates and updates persistent Ghost NIC Hunter Automation variable settings.'
+    runbookType: 'PowerShell'
+    logProgress: false
+    logVerbose: true
+    publishContentLink: {
+      uri: configurationRunbookUri
       version: '1.0.0.0'
     }
   }
@@ -247,6 +271,8 @@ resource workbook 'Microsoft.Insights/workbooks@2023-06-01' = {
 
 output automationAccountName string = resolvedAutomationAccountName
 output runbookName string = runbookName
+output configurationRunbookName string = configurationRunbookName
+output automationVariablesEncrypted bool = encryptAutomationVariables
 output targetResourceGroupIds array = resolvedTargetResourceGroupIds
 output workspaceId string = workspaceId
 output workbookId string = workbook.id
