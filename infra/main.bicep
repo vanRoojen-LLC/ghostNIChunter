@@ -70,6 +70,16 @@ resource runtimeVariables 'Microsoft.Automation/automationAccounts/variables@202
   }
 }]
 
+resource recencyState 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = {
+  parent: automationAccount
+  name: 'GhostNicRecencyState'
+  properties: {
+    description: 'Internal encrypted per-VM completion and lease state used by the opportunistic catch-up schedule.'
+    isEncrypted: true
+    value: '"{}"'
+  }
+}
+
 var resolvedWorkspaceName = empty(logAnalyticsWorkspaceName) ? 'law-ghostnic-${take(uniqueString(resourceGroup().id, automationAccount.name), 12)}' : logAnalyticsWorkspaceName
 resource generatedWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = if (empty(logAnalyticsWorkspaceResourceId)) {
   name: resolvedWorkspaceName

@@ -15,6 +15,19 @@ param enableScheduledRemoval bool = false
 @description('Restart a VM after scheduled removal reports that a restart is required. Used only when scheduled removal is enabled.')
 param restartRemediatedVms bool = false
 
+@description('Create an hourly catch-up schedule that processes online VMs whose last completed Ghost NIC result is stale.')
+param enableOpportunisticCatchUp bool = true
+
+@minValue(1)
+@maxValue(24)
+@description('Number of hours between opportunistic catch-up runs.')
+param catchUpIntervalHours int = 1
+
+@minValue(1)
+@maxValue(168)
+@description('Age in hours after which an online VM becomes eligible for opportunistic catch-up.')
+param catchUpFreshnessHours int = 26
+
 var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(subscription().id, resourceGroup().id, 'ghostnic'), 10)}')
 var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
 var runbookName = 'Invoke-GhostNicMaintenance'
@@ -24,6 +37,8 @@ var dailyScheduleTimeZone = 'America/Los_Angeles'
 var dailyScheduleLocalTime = '12:30'
 var dailyScheduleOperation = enableScheduledRemoval ? 'Remove' : 'Detect'
 var dailyJobScheduleId = guid(automationAccount.id, runbookName, dailyScheduleName)
+var catchUpScheduleName = 'GhostNic-CatchUp-Hourly'
+var catchUpJobScheduleId = guid(automationAccount.id, runbookName, catchUpScheduleName)
 var scheduleBootstrapRunbookName = 'Initialize-GhostNicSchedule'
 var scheduleBootstrapRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20261026.ps1'
 var automationContributorRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f353d9bd-d4a6-484e-a77a-8050b599b867')
@@ -110,6 +125,16 @@ resource runtimeVariables 'Microsoft.Automation/automationAccounts/variables@202
   }
 }]
 
+resource recencyState 'Microsoft.Automation/automationAccounts/variables@2023-11-01' = {
+  parent: automationAccount
+  name: 'GhostNicRecencyState'
+  properties: {
+    description: 'Internal encrypted per-VM completion and lease state used by the opportunistic catch-up schedule.'
+    isEncrypted: true
+    value: '"{}"'
+  }
+}
+
 var resolvedWorkspaceName = 'law-ghostnic-${take(uniqueString(resourceGroup().id, resolvedAutomationAccountName), 12)}'
 resource generatedWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: resolvedWorkspaceName
@@ -130,6 +155,7 @@ resource runbook 'Microsoft.Automation/automationAccounts/runbooks@2023-11-01' =
     azAccountsModule
     azComputeModule
     runtimeVariables
+    recencyState
   ]
   tags: tags
   properties: {
@@ -217,9 +243,51 @@ resource dailyDetectionJobSchedule 'Microsoft.Automation/automationAccounts/jobs
       AzureEnvironmentName: environment().name
       ScheduleTimeZone: dailyScheduleTimeZone
       ScheduleLocalTime: dailyScheduleLocalTime
+      ScheduleFrequency: 'Day'
+      ScheduleInterval: 1
+      ScheduleEnabled: true
       ScheduledOperation: dailyScheduleOperation
       ScheduledConfirmRemoval: enableScheduledRemoval
       ScheduledRestartRemediatedVm: enableScheduledRemoval && restartRemediatedVms
+      UseFreshnessFilter: false
+      FreshnessHours: catchUpFreshnessHours
+      OfflineRetryCount: 2
+      OfflineRetryDelayMinutes: 30
+    }
+    runbook: {
+      name: scheduleBootstrapRunbookName
+    }
+  }
+}
+
+resource catchUpJobSchedule 'Microsoft.Automation/automationAccounts/jobs@2023-11-01' = {
+  parent: automationAccount
+  name: guid(automationAccount.id, 'catchup-schedule-bootstrap', deploymentTime)
+  dependsOn: [
+    runbook
+    scheduleLinkerRole
+    scheduleBootstrapRunbook
+  ]
+  properties: {
+    parameters: {
+      AutomationAccountResourceId: automationAccount.id
+      RunbookName: runbookName
+      ScheduleName: catchUpScheduleName
+      JobScheduleId: catchUpJobScheduleId
+      ScheduleLinkerClientId: scheduleLinkerIdentity.properties.clientId
+      AzureEnvironmentName: environment().name
+      ScheduleTimeZone: dailyScheduleTimeZone
+      ScheduleLocalTime: '00:00'
+      ScheduleFrequency: 'Hour'
+      ScheduleInterval: catchUpIntervalHours
+      ScheduleEnabled: enableOpportunisticCatchUp
+      ScheduledOperation: dailyScheduleOperation
+      ScheduledConfirmRemoval: enableScheduledRemoval
+      ScheduledRestartRemediatedVm: enableScheduledRemoval && restartRemediatedVms
+      UseFreshnessFilter: true
+      FreshnessHours: catchUpFreshnessHours
+      OfflineRetryCount: 0
+      OfflineRetryDelayMinutes: 0
     }
     runbook: {
       name: scheduleBootstrapRunbookName
@@ -280,3 +348,7 @@ output dailyScheduleName string = dailyScheduleName
 output dailyScheduleTimeZone string = dailyScheduleTimeZone
 output dailyScheduleLocalTime string = dailyScheduleLocalTime
 output dailyScheduleOperation string = dailyScheduleOperation
+output catchUpEnabled bool = enableOpportunisticCatchUp
+output catchUpScheduleName string = enableOpportunisticCatchUp ? catchUpScheduleName : ''
+output catchUpIntervalHours int = catchUpIntervalHours
+output catchUpFreshnessHours int = catchUpFreshnessHours

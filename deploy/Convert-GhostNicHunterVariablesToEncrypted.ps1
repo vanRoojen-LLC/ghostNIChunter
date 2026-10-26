@@ -42,8 +42,9 @@ $requiredVariableNames = @(
     'GhostNicPnpCleanWaitSeconds'
     'GhostNicRequireProblemCode45'
 )
+$optionalVariableNames = @('GhostNicRecencyState')
 $legacyVariableNames = @('GhostNicOperation', 'GhostNicConfirmRemoval', 'GhostNicTargetVmResourceIds')
-$knownVariableNames = @($requiredVariableNames + $legacyVariableNames)
+$knownVariableNames = @($requiredVariableNames + $optionalVariableNames + $legacyVariableNames)
 $scheduleName = 'GhostNic-Daily-Detect-1230'
 $terminalJobStatuses = @('Completed', 'Failed', 'Stopped')
 
@@ -116,7 +117,7 @@ if ($missingRequiredVariables.Count -gt 0) {
     throw "Required variable(s) are missing: $(($missingRequiredVariables | Sort-Object) -join ', '). Redeploy or restore the current variable set before migration."
 }
 
-$currentVariables = @($allVariables | Where-Object { $_.Name -in $requiredVariableNames })
+$currentVariables = @($allVariables | Where-Object { $_.Name -in @($requiredVariableNames + $optionalVariableNames) })
 $legacyVariables = @($allVariables | Where-Object { $_.Name -in $legacyVariableNames })
 $encryptedCurrentVariables = @($currentVariables | Where-Object { Get-VariableEncryptedState -Variable $_ })
 $plaintextCurrentVariables = @($currentVariables | Where-Object { -not (Get-VariableEncryptedState -Variable $_) })

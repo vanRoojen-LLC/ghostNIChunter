@@ -33,6 +33,17 @@ param(
     [string]$ScheduleLocalTime,
 
     [Parameter(Mandatory)]
+    [ValidateSet('Day', 'Hour')]
+    [string]$ScheduleFrequency,
+
+    [Parameter(Mandatory)]
+    [ValidateRange(1, 24)]
+    [int]$ScheduleInterval,
+
+    [Parameter(Mandatory)]
+    [bool]$ScheduleEnabled,
+
+    [Parameter(Mandatory)]
     [ValidateSet('Detect', 'Remove')]
     [string]$ScheduledOperation,
 
@@ -40,7 +51,22 @@ param(
     [bool]$ScheduledConfirmRemoval,
 
     [Parameter(Mandatory)]
-    [bool]$ScheduledRestartRemediatedVm
+    [bool]$ScheduledRestartRemediatedVm,
+
+    [Parameter(Mandatory)]
+    [bool]$UseFreshnessFilter,
+
+    [Parameter(Mandatory)]
+    [ValidateRange(1, 168)]
+    [int]$FreshnessHours,
+
+    [Parameter(Mandatory)]
+    [ValidateRange(0, 6)]
+    [int]$OfflineRetryCount,
+
+    [Parameter(Mandatory)]
+    [ValidateRange(0, 120)]
+    [int]$OfflineRetryDelayMinutes
 )
 
 Set-StrictMode -Version Latest
@@ -94,10 +120,14 @@ function Get-ScheduleTimeZoneInfo {
 function Get-NextScheduleStartTime {
     param(
         [Parameter(Mandatory)][string]$TimeZoneId,
-        [Parameter(Mandatory)][string]$LocalTime
+        [Parameter(Mandatory)][string]$LocalTime,
+        [Parameter(Mandatory)][ValidateSet('Day', 'Hour')][string]$Frequency
     )
 
     $timeZone = Get-ScheduleTimeZoneInfo -Id $TimeZoneId
+    if ($Frequency -eq 'Hour') {
+        return [DateTimeOffset]::UtcNow.AddMinutes(10).ToString('o')
+    }
     $timeParts = $LocalTime.Split(':')
     $nowLocal = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $timeZone)
     $candidate = [DateTime]::SpecifyKind(
@@ -153,13 +183,33 @@ if ($existingAssociation.Count -gt 0) {
     }
 }
 
-$scheduleStartTime = Get-NextScheduleStartTime -TimeZoneId $ScheduleTimeZone -LocalTime $ScheduleLocalTime
+if (-not $ScheduleEnabled) {
+    $schedulePath = "$AutomationAccountResourceId/schedules/$ScheduleName`?api-version=2023-11-01"
+    try {
+        Invoke-AzRestMethod -Path $schedulePath -Method DELETE -DefaultProfile $azureContext | Out-Null
+    }
+    catch {
+        if ($_.Exception.Message -notmatch '(?i)404|not.?found') { throw }
+    }
+    $scheduleResult = [ordered]@{
+        Succeeded = $true
+        Changed = ($existingAssociation.Count -gt 0)
+        Reason = 'ScheduleDisabledAndAssociationRemoved'
+        Operation = $ScheduledOperation
+        ScheduleName = $ScheduleName
+    }
+    Write-Output "GHNIC_SCHEDULE:$($scheduleResult | ConvertTo-Json -Compress)"
+    return
+}
+
+$scheduleStartTime = Get-NextScheduleStartTime -TimeZoneId $ScheduleTimeZone -LocalTime $ScheduleLocalTime -Frequency $ScheduleFrequency
+$scheduleCadence = if ($ScheduleFrequency -eq 'Day') { "daily at $ScheduleLocalTime in $ScheduleTimeZone" } else { "every $ScheduleInterval hour(s)" }
 $scheduleBody = @{
     name = $ScheduleName
     properties = @{
-        description = "Runs Ghost NIC $($ScheduledOperation.ToLowerInvariant()) daily at $ScheduleLocalTime in $ScheduleTimeZone. Administrators can adjust or disable this schedule in Azure Automation."
-        frequency = 'Day'
-        interval = 1
+        description = "Runs Ghost NIC $($ScheduledOperation.ToLowerInvariant()) $scheduleCadence. Administrators can adjust or disable this schedule in Azure Automation."
+        frequency = $ScheduleFrequency
+        interval = $ScheduleInterval
         startTime = $scheduleStartTime
         timeZone = $ScheduleTimeZone
     }
@@ -167,7 +217,13 @@ $scheduleBody = @{
 $schedulePath = "$AutomationAccountResourceId/schedules/$ScheduleName`?api-version=2023-11-01"
 Invoke-AzRestMethod -Path $schedulePath -Method PUT -Payload $scheduleBody -DefaultProfile $azureContext | Out-Null
 
-$scheduledParameters = [ordered]@{ Operation = $ScheduledOperation }
+$scheduledParameters = [ordered]@{
+    Operation = $ScheduledOperation
+    UseFreshnessFilter = $UseFreshnessFilter.ToString().ToLowerInvariant()
+    FreshnessHours = $FreshnessHours.ToString()
+    OfflineRetryCount = $OfflineRetryCount.ToString()
+    OfflineRetryDelayMinutes = $OfflineRetryDelayMinutes.ToString()
+}
 if ($ScheduledOperation -eq 'Remove') {
     $scheduledParameters['ConfirmRemoval'] = $ScheduledConfirmRemoval.ToString().ToLowerInvariant()
     $scheduledParameters['RestartRemediatedVm'] = $ScheduledRestartRemediatedVm.ToString().ToLowerInvariant()
@@ -208,6 +264,8 @@ $scheduleResult = [ordered]@{
     Changed = $true
     Reason = 'ScheduleAndAssociationReconciled'
     Operation = $ScheduledOperation
+    ScheduleName = $ScheduleName
+    ScheduleEnabled = $true
     StartTime = $scheduleStartTime
 }
 Write-Output "GHNIC_SCHEDULE:$($scheduleResult | ConvertTo-Json -Compress)"

@@ -30,6 +30,14 @@ param(
 
     [bool]$RestartRemediatedVms = $false,
 
+    [bool]$EnableOpportunisticCatchUp = $true,
+
+    [ValidateRange(1, 24)]
+    [int]$CatchUpIntervalHours = 1,
+
+    [ValidateRange(1, 168)]
+    [int]$CatchUpFreshnessHours = 26,
+
     [bool]$EncryptAutomationVariables = $true,
 
     [hashtable]$Tags = @{
@@ -112,7 +120,7 @@ if ($existingResourceGroup) {
 
         $modeMismatches = @(
             $existingAutomationVariables |
-                Where-Object { $_.Name -like 'GhostNic*' -and $_.Name -notin $legacyVariableNames } |
+                Where-Object { $_.Name -like 'GhostNic*' -and $_.Name -notin $legacyVariableNames -and $_.Name -ne 'GhostNicRecencyState' } |
                 Where-Object {
                     $encryptionProperty = $_.PSObject.Properties['Encrypted']
                     if (-not $encryptionProperty) { $encryptionProperty = $_.PSObject.Properties['IsEncrypted'] }
@@ -203,7 +211,13 @@ foreach ($legacyVariable in $legacyVariables) {
 $dailyScheduleName = 'GhostNic-Daily-Detect-1230'
 $dailyScheduleLocalTime = '12:30'
 $dailyScheduleOperation = if ($EnableScheduledRemoval) { 'Remove' } else { 'Detect' }
-$dailyScheduleParameters = @{ Operation = $dailyScheduleOperation }
+$dailyScheduleParameters = @{
+    Operation = $dailyScheduleOperation
+    UseFreshnessFilter = $false
+    FreshnessHours = $CatchUpFreshnessHours
+    OfflineRetryCount = 2
+    OfflineRetryDelayMinutes = 30
+}
 if ($EnableScheduledRemoval) {
     $dailyScheduleParameters.ConfirmRemoval = $true
     $dailyScheduleParameters.RestartRemediatedVm = [bool]$RestartRemediatedVms
@@ -259,6 +273,71 @@ if ($PSCmdlet.ShouldProcess($runbookName, "Link to $dailyScheduleName in $dailyS
         -Parameters $dailyScheduleParameters | Out-Null
 }
 
+$catchUpScheduleName = 'GhostNic-CatchUp-Hourly'
+$catchUpScheduleParameters = @{
+    Operation = $dailyScheduleOperation
+    UseFreshnessFilter = $true
+    FreshnessHours = $CatchUpFreshnessHours
+    OfflineRetryCount = 0
+    OfflineRetryDelayMinutes = 0
+}
+if ($EnableScheduledRemoval) {
+    $catchUpScheduleParameters.ConfirmRemoval = $true
+    $catchUpScheduleParameters.RestartRemediatedVm = [bool]$RestartRemediatedVms
+}
+
+$catchUpAssociation = Get-AzAutomationScheduledRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -ScheduleName $catchUpScheduleName -RunbookName $runbookName -ErrorAction SilentlyContinue
+if ($catchUpAssociation -and $PSCmdlet.ShouldProcess($runbookName, "Reconcile association with $catchUpScheduleName")) {
+    Unregister-AzAutomationScheduledRunbook `
+        -ResourceGroupName $ResourceGroupName `
+        -AutomationAccountName $AutomationAccountName `
+        -RunbookName $runbookName `
+        -ScheduleName $catchUpScheduleName `
+        -Force
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $catchUpAssociation = Get-AzAutomationScheduledRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -ScheduleName $catchUpScheduleName -RunbookName $runbookName -ErrorAction SilentlyContinue
+        if (-not $catchUpAssociation) { break }
+        if ($attempt -eq 30) { throw "Timed out waiting for the existing $catchUpScheduleName association to be deleted." }
+        Start-Sleep -Seconds 5
+    }
+}
+
+$catchUpSchedule = Get-AzAutomationSchedule -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $catchUpScheduleName -ErrorAction SilentlyContinue
+if ($catchUpSchedule -and $PSCmdlet.ShouldProcess($catchUpScheduleName, 'Replace the opportunistic catch-up schedule')) {
+    Remove-AzAutomationSchedule `
+        -ResourceGroupName $ResourceGroupName `
+        -AutomationAccountName $AutomationAccountName `
+        -Name $catchUpScheduleName `
+        -Force
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $catchUpSchedule = Get-AzAutomationSchedule -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $catchUpScheduleName -ErrorAction SilentlyContinue
+        if (-not $catchUpSchedule) { break }
+        if ($attempt -eq 30) { throw "Timed out waiting for schedule '$catchUpScheduleName' to be deleted." }
+        Start-Sleep -Seconds 5
+    }
+    $catchUpSchedule = $null
+}
+
+if ($EnableOpportunisticCatchUp) {
+    if (-not $catchUpSchedule -and $PSCmdlet.ShouldProcess($catchUpScheduleName, "Create an every-$CatchUpIntervalHours-hour opportunistic catch-up schedule")) {
+        $catchUpSchedule = New-AzAutomationSchedule `
+            -ResourceGroupName $ResourceGroupName `
+            -AutomationAccountName $AutomationAccountName `
+            -Name $catchUpScheduleName `
+            -StartTime ([DateTimeOffset]::UtcNow.AddMinutes(10)) `
+            -HourInterval $CatchUpIntervalHours `
+            -Description "Processes only online VMs whose last completed Ghost NIC result is at least $CatchUpFreshnessHours hours old."
+    }
+    if ($PSCmdlet.ShouldProcess($runbookName, "Link to $catchUpScheduleName in $dailyScheduleOperation mode")) {
+        Register-AzAutomationScheduledRunbook `
+            -ResourceGroupName $ResourceGroupName `
+            -AutomationAccountName $AutomationAccountName `
+            -RunbookName $runbookName `
+            -ScheduleName $catchUpScheduleName `
+            -Parameters $catchUpScheduleParameters | Out-Null
+    }
+}
+
 try {
     foreach ($targetResourceGroupId in $targetResourceGroupIds) {
         $targetSubscriptionId = ($targetResourceGroupId -split '/')[2]
@@ -285,6 +364,10 @@ finally {
     DailySchedule       = $dailyScheduleName
     DailyScheduleTimeZone = $DailyScheduleTimeZone
     DailyScheduleOperation = $dailyScheduleOperation
+    OpportunisticCatchUpEnabled = $EnableOpportunisticCatchUp
+    CatchUpSchedule      = if ($EnableOpportunisticCatchUp) { $catchUpScheduleName } else { '' }
+    CatchUpIntervalHours = $CatchUpIntervalHours
+    CatchUpFreshnessHours = $CatchUpFreshnessHours
     RestartRemediatedVms = [bool]($EnableScheduledRemoval -and $RestartRemediatedVms)
     NextStep            = 'Start Invoke-GhostNicMaintenance with Operation=Detect; target VMs will be discovered from the configured resource groups.'
 }

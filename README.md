@@ -21,7 +21,7 @@ Microsoft describes this as a design behavior of Accelerated Networking after de
 
 Click **Deploy to Azure** above. Azure Portal will ask you to sign in, select the subscription and resource group, and enter one target resource-group ID or multiple IDs separated by commas. The wizard automatically generates the Automation account and a dedicated Log Analytics workspace, imports the runbooks, deploys the workbook, and grants its managed identity **Virtual Machine Contributor** on each selected target group. Target groups can span subscriptions in the same tenant when the deploying identity can create role assignments at every selected scope.
 
-The **Encrypt Automation Variables** choice defaults to `true`. Keep it enabled for the recommended policy-compliant deployment, or choose `false` when operators intentionally need portal-readable variables and policy permits them. See [Automation variable encryption](#automation-variable-encryption) before selecting a mode for an existing installation. **Enable Scheduled Removal** defaults to `false`; turn it on only when the daily job should remediate instead of inventory. **Restart Remediated VMs** is a separate opt-in used only with scheduled removal.
+The **Encrypt Automation Variables** choice defaults to `true`. Keep it enabled for the recommended policy-compliant deployment, or choose `false` when operators intentionally need portal-readable variables and policy permits them. See [Automation variable encryption](#automation-variable-encryption) before selecting a mode for an existing installation. **Enable Scheduled Removal** defaults to `false`; turn it on only when scheduled jobs should remediate instead of inventory. **Restart Remediated VMs** is a separate opt-in used only with scheduled removal. **Enable Opportunistic Catch Up** defaults to `true`: an hourly job checks only running VMs whose last completed result is at least 26 hours old, so a VM missed while offline is picked up after it returns without waiting for the next daily sweep.
 
 The deploying identity needs permission to create the Automation account, workspace, workbook, managed identity, Automation jobs, and role assignments. A helper user-assigned identity has Automation Contributor only on the generated Automation account; a one-time bootstrap job uses it to reconcile the schedule and its immutable runbook association without leaving a conflicting job schedule. This does not use Deployment Scripts, temporary storage accounts, or container instances. Deployment does not issue an immediate VM Run Command; start the imported runbook with its safe `Detect` default after it completes.
 
@@ -48,13 +48,13 @@ Connect-AzAccount
 
 `EncryptAutomationVariables` defaults to `$true`; pass `$false` only when readable normal variables are intentional and policy permits them. `TargetResourceGroupIds` grants the Automation identity **Virtual Machine Contributor** separately at each selected resource-group scope, which is the minimum built-in role that includes `Microsoft.Compute/virtualMachines/runCommand/write`. The target IDs can span subscriptions in the signed-in tenant; the runbook selects each target subscription before discovery and Run Command. It discovers Windows VMs in those groups and honors the `ghostNicHunterExclusions` VM tag (`scan`, `remove`, or `scan,remove`).
 
-The Bicep deployment creates the Automation account, managed identity, seven variables, monitoring resources, and workbook. The script imports and publishes both operator-facing runbooks, then grants the identity its selected resource-group scopes.
+The Bicep deployment creates the Automation account, managed identity, seven operator variables, one encrypted internal recency-state variable, monitoring resources, and workbook. The script imports and publishes both operator-facing runbooks, then grants the identity its selected resource-group scopes.
 
 Supplying `LogAnalyticsWorkspaceResourceId` uses an existing workspace. If omitted, the deployment creates a tagged 30-day Log Analytics workspace, configures Automation `JobLogs` and `JobStreams`, and deploys the **Ghost NIC Hunter dashboard** workbook automatically.
 
 ## Automation variable encryption
 
-The deployment creates seven Ghost NIC Hunter Automation variables. The `Encrypt Automation Variables` portal option and the CLI `EncryptAutomationVariables` parameter apply one storage mode to all seven when they are first created.
+The deployment creates seven operator-facing Ghost NIC Hunter Automation variables. The `Encrypt Automation Variables` portal option and the CLI `EncryptAutomationVariables` parameter apply one storage mode to those seven when they are first created. `GhostNicRecencyState` is an eighth, internal variable and is always encrypted; it holds only per-VM completion timestamps, prior result counts/state, and short leases used to prevent duplicate scheduled work.
 
 | Deployment choice | Storage and visibility | When to use it |
 |---|---|---|
@@ -69,11 +69,11 @@ For a new encrypted installation, deploy with **Encrypt Automation Variables** s
 
 | Order | Component | Who runs it | Purpose |
 |---|---|---|---|
-| 1 | Portal deployment or `Deploy-GhostNicHunter.ps1` | Operator, once | Creates the Automation account, encrypted variables, managed identity, runbooks, role assignments, monitoring, and daily Detect schedule. |
-| 2 | `Initialize-GhostNicSchedule` | Deployment, automatically | Links the daily Detect schedule during a portal deployment. The CLI deployment performs the equivalent setup directly. Do not start this runbook manually during a normal deployment. |
+| 1 | Portal deployment or `Deploy-GhostNicHunter.ps1` | Operator, once | Creates the Automation account, encrypted variables, managed identity, runbooks, role assignments, monitoring, daily schedule, and opportunistic catch-up schedule. |
+| 2 | `Initialize-GhostNicSchedule` | Deployment, automatically | Links the daily and catch-up schedules during a portal deployment. The CLI deployment performs the equivalent setup directly. Do not start this runbook manually during a normal deployment. |
 | 3 | `Configure-GhostNicHunter` | Operator, only if defaults must change | Preview persistent behavior changes first, then rerun with `ApplyChanges=true`. Skip this runbook when the documented defaults are acceptable. |
 | 4 | `Invoke-GhostNicMaintenance` with `Operation=Detect` | Operator, once for validation; then the schedule | Performs the first read-only scan. Review its output before accepting the scheduled deployment. |
-| 5 | `Invoke-GhostNicMaintenance` with `Operation=Remove` and `ConfirmRemoval=true` | Operator, manually and only when approved | Removes reviewed candidates. Removal is never enabled by the schedule or a persistent variable. |
+| 5 | `Invoke-GhostNicMaintenance` with `Operation=Remove` and `ConfirmRemoval=true` | Operator, manually and only when approved | Removes reviewed candidates. Scheduled removal remains disabled unless the deployment explicitly sets **Enable Scheduled Removal**. |
 
 Do **not** run `Convert-GhostNicHunterVariablesToEncrypted.ps1` for a new deployment. That local helper exists only to convert an existing installation whose variables are currently normal.
 
@@ -81,7 +81,7 @@ Do **not** run `Convert-GhostNicHunterVariablesToEncrypted.ps1` for a new deploy
 
 1. Start the [portal deployment](#portal-deployment), leave **Encrypt Automation Variables** set to `true`, select the target resource groups, and wait for the Azure deployment to complete.
 2. Open the deployed Automation account, select **Runbooks**, and verify that `Invoke-GhostNicMaintenance`, `Configure-GhostNicHunter`, and `Initialize-GhostNicSchedule` are published.
-3. Under **Schedules**, verify that `GhostNic-Daily-Detect-1230` is enabled. Under **Jobs**, verify that the one-time `Initialize-GhostNicSchedule` bootstrap job completed. Do not manually start that runbook unless recovering a failed deployment.
+3. Under **Schedules**, verify that `GhostNic-Daily-Detect-1230` and, when enabled, `GhostNic-CatchUp-Hourly` are active. Under **Jobs**, verify that both one-time `Initialize-GhostNicSchedule` bootstrap jobs completed. Do not manually start that runbook unless recovering a failed deployment.
 4. If the default behavior settings are acceptable, skip to step 5. Otherwise, open `Configure-GhostNicHunter`, select **Start**, enter only the intended changes, and leave `ApplyChanges` false. Review the `GHNIC_CONFIG:` output, then start it again with the same settings and `ApplyChanges=true`.
 5. Open `Invoke-GhostNicMaintenance`, select **Start**, and set `Operation` to `Detect`. Leave `ConfirmRemoval` false and leave both target parameters blank to use the resource groups selected at deployment. Review every `GHNIC_RESULT:` output record and resolve scope, permission, or Run Command errors.
 6. The daily schedule can now remain enabled for Detect-only operation. If removal is later approved, first take the required recovery point, review a current Detect job, and then manually start `Invoke-GhostNicMaintenance` with both `Operation=Remove` and `ConfirmRemoval=true`.
@@ -200,7 +200,7 @@ Connect-AzAccount
 
 5. Redeploy Ghost NIC Hunter with the same Automation account and target resource groups, using the portal wizard with **Encrypt Automation Variables** enabled or rerunning the [CLI deployment](#cli-deployment) with `EncryptAutomationVariables=$true`.
 6. Reapply the recorded behavior settings using [Change persistent behavior](#change-persistent-behavior) with `ApplyChanges=$true`.
-7. Verify that exactly seven current Ghost NIC Hunter variables remain, all report `Encrypted=True`, and obsolete variables are absent:
+7. Verify that exactly eight current Ghost NIC Hunter variables remain after redeployment, all report `Encrypted=True`, and obsolete variables are absent:
 
 ```powershell
 Get-AzAutomationVariable `
@@ -256,9 +256,9 @@ The deployment creates six persistent behavior variables. Explicit maintenance-j
 | `GhostNicPnpCleanWaitSeconds` | `10` | Delay between PnpClean and the pnputil fallback. |
 | `GhostNicRequireProblemCode45` | `true` | Require `CM_PROB_PHANTOM` code 45 before pnputil removal. |
 
-The seventh variable, `GhostNicTargetResourceGroupIds`, stores the selected resource-group scope. `Operation` and `ConfirmRemoval` are deliberately not persistent variables: every removal job must explicitly supply both `Operation=Remove` and `ConfirmRemoval=$true`, while an omitted operation always defaults to `Detect`.
+The seventh operator variable, `GhostNicTargetResourceGroupIds`, stores the selected resource-group scope. The internal `GhostNicRecencyState` variable is always encrypted and is not operator configuration. `Operation` and `ConfirmRemoval` are deliberately not persistent variables: every removal job must explicitly supply both `Operation=Remove` and `ConfirmRemoval=$true`, while an omitted operation always defaults to `Detect`.
 
-All seven variables use the deployment's encryption choice. Encrypted variables are write-only in the Azure portal; normal variables remain readable. `Configure-GhostNicHunter` provides the same validated update experience in either mode without printing values.
+All seven operator variables use the deployment's encryption choice; the internal recency state remains encrypted in either mode. Encrypted variables are write-only in the Azure portal; normal variables remain readable. `Configure-GhostNicHunter` provides the same validated update experience in either mode without printing values.
 
 ### Change persistent behavior
 
@@ -281,6 +281,12 @@ Target scope is not changed by this runbook because target changes also require 
 Deployment creates and links an enabled Automation schedule named `GhostNic-Daily-Detect-1230`. The bootstrap computes the next **12:30 PM Pacific time** occurrence with its UTC offset and stores `America/Los_Angeles`, so the first run is not accidentally interpreted as 12:30 UTC and later runs follow daylight-saving changes. The default is `Operation=Detect`. Setting **Enable Scheduled Removal** to `true` deploys `Operation=Remove` with confirmation; **Restart Remediated VMs** can additionally request an Azure VM restart after verified cleanup. Redeployment deletes only this runbook/schedule association, waits for Azure Automation to release it, and recreates it with the selected parameters, avoiding the “jobSchedule with same id already exists” conflict. An administrator can still adjust or disable the schedule under **Automation Account → Shared Resources → Schedules**.
 
 Before issuing VM Run Command, the runbook checks Azure power state in batches and processes running VMs first. Offline VMs are checked two more times at 30-minute intervals by default; only those still unavailable are recorded as `OfflineSkipped` with `CommandIssued=false`. Manual jobs can override `OfflineRetryCount` and `OfflineRetryDelayMinutes`.
+
+### Opportunistic catch-up
+
+Deployment also creates `GhostNic-CatchUp-Hourly` by default. It starts ten minutes after deployment and repeats hourly. Each run considers only VMs that are already online, uses no offline wait/retry cycle, and issues Run Command only when the VM has no completed result within the 26-hour freshness window. That window is intentionally longer than the daily cadence so normally scanned VMs are not scanned twice; a VM that missed a daily run becomes eligible shortly afterward. The daily run ignores this freshness filter and remains the authoritative full sweep. A per-VM lease normally prevents the daily and catch-up jobs from issuing the same command concurrently.
+
+The catch-up operation follows the same deployment choice as the daily schedule: Detect by default, or confirmed Remove only when **Enable Scheduled Removal** is explicitly enabled. An administrator can disable or adjust the hourly schedule in Azure Automation; redeployment restores the chosen template settings and resets the internal recency state, so the next catch-up can establish a fresh baseline. `FreshnessSkipped` and `InProgressSkipped` records preserve current dashboard state but are excluded from cumulative and removal totals.
 
 Detection is safe and is the normal first job:
 
@@ -307,7 +313,7 @@ For a job’s output, use `Get-AzAutomationJobOutput` and `Get-AzAutomationJobOu
 
 ## Dashboard
 
-The optional Azure Monitor Workbook has a latest fleet-state table, current totals, current top offenders, cumulative offenders, and a weekly removal trend. Latest state distinguishes `VerifiedClean`, `CleanupPending`, `OfflineSkipped`, `RebootPending`, `RestartInitiated`, and `AttentionRequired`; current ghost counts subtract removals reported by the newest result. Structured removal results still contribute their historical removal totals when final validation returns `SafetyAbort` or `PartialFailure`. VM tables merge results with Azure Resource Graph power state whenever the workbook refreshes, while `Last-run status` remains as a fallback for inaccessible or deleted VMs.
+The optional Azure Monitor Workbook has a latest fleet-state table, current totals, current top offenders, cumulative offenders, and a weekly removal trend. Latest state distinguishes `VerifiedClean`, `CleanupPending`, `OfflineSkipped`, `RebootPending`, `RestartInitiated`, and `AttentionRequired`; current ghost counts subtract removals reported by the newest result. Structured removal results still contribute their historical removal totals when final validation returns `SafetyAbort` or `PartialFailure`. Freshness/lease skips do not inflate historical counts. VM tables merge results with Azure Resource Graph power state whenever the workbook refreshes, while `Last-run status` remains as a fallback for inaccessible or deleted VMs.
 
 ## Safety and scope
 
@@ -326,7 +332,7 @@ The device-classification and cleanup approach is derived from Microsoft’s [de
 - `infra/main.bicep` — Automation account with system-assigned managed identity.
 - `runbooks/Invoke-GhostNicMaintenance.ps1` — Azure Automation entry point and in-guest cleanup payload.
 - `runbooks/Configure-GhostNicHunter.ps1` — validated updates for the six persistent behavior settings.
-- `runbooks/Initialize-GhostNicSchedule.ps1` — storage-free, idempotent schedule-link bootstrap runbook.
+- `runbooks/Initialize-GhostNicSchedule.ps1` — storage-free, idempotent daily/catch-up schedule-link bootstrap runbook.
 - `deploy/Deploy-GhostNicHunter.ps1` — idempotent account/runbook deployment and optional least-scope role assignment.
 - `deploy/Convert-GhostNicHunterVariablesToEncrypted.ps1` — guarded plaintext-to-encrypted variable migration.
 - `docs/operations.md` — operational runbook, outputs, and rollback boundary.

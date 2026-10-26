@@ -13,7 +13,7 @@ The repository’s **Deploy to Azure** button opens the Azure portal template wi
 
 The portal deployment does not issue an immediate Run Command. It requires the deploying user to have role-assignment write permission on every target resource group. Add or remove target groups through the deployment workflow so the stored scope and Azure RBAC are handled together. The deployment grants selected scopes but does not revoke role assignments left on a group that is removed from the list; remove obsolete assignments explicitly.
 
-The **Encrypt Automation Variables** choice defaults to `true`. Keep it enabled for the normal policy-compliant deployment. Choosing `false` keeps the seven app variables readable in the portal, but a policy assignment using `Deny` for unencrypted Automation variables rejects that deployment. Encryption mode is immutable after a variable is created; changing the deployment choice alone cannot convert an existing installation. **Enable Scheduled Removal** and **Restart Remediated VMs** both default to `false`; the latter is honored only when scheduled removal is enabled.
+The **Encrypt Automation Variables** choice defaults to `true`. Keep it enabled for the normal policy-compliant deployment. Choosing `false` keeps the seven operator variables readable in the portal, but a policy assignment using `Deny` for unencrypted Automation variables rejects that deployment. The internal `GhostNicRecencyState` variable is always encrypted. Encryption mode is immutable after a variable is created; changing the deployment choice alone cannot convert an existing installation. **Enable Scheduled Removal** and **Restart Remediated VMs** both default to `false`; the latter is honored only when scheduled removal is enabled. **Enable Opportunistic Catch Up** defaults to `true`.
 
 ## Azure authority model
 
@@ -23,7 +23,7 @@ The Automation account uses a system-assigned managed identity. It needs **Virtu
 
 ## Persistent behavior settings
 
-The templates create seven Automation variables: `GhostNicTargetResourceGroupIds` plus these six persistent behavior settings:
+The templates create seven operator variables: `GhostNicTargetResourceGroupIds` plus these six persistent behavior settings:
 
 | Variable | Default |
 |---|---:|
@@ -54,9 +54,17 @@ Target resource groups are intentionally outside this configuration runbook beca
 
 `Operation` and `ConfirmRemoval` are not Automation variables. They are job parameters: an omitted operation always becomes `Detect`, and removal requires both `Operation=Remove` and `ConfirmRemoval=$true`. The daily association passes `Detect` by default or a confirmed `Remove` only when deployment explicitly enables scheduled removal.
 
+`GhostNicRecencyState` is an eighth, always-encrypted internal variable. It records per-VM completion timestamps, prior result state/counts, and short leases for the opportunistic schedule. It is not an operator setting and must not be edited manually.
+
 ## Daily schedule
 
 The deployment bootstrap creates `GhostNic-Daily-Detect-1230` for 12:30 PM in `America/Los_Angeles`. It calculates an offset-aware first run, so 12:30 is Pacific local time rather than UTC, and Azure Automation applies daylight-saving changes. During redeployment the bootstrap removes only the existing association for this runbook and schedule, waits for deletion, and recreates it with the requested Detect/Remove/restart parameters. This prevents stale parameters and the `A jobSchedule with same id already exists` conflict. The schedule name is retained for upgrade compatibility even when scheduled removal is enabled; an administrator can rename or adjust it after deployment.
+
+## Opportunistic catch-up schedule
+
+`GhostNic-CatchUp-Hourly` runs hourly by default. It never starts a VM and uses zero offline retries, so only VMs already reporting `VM running` receive Run Command. A VM is eligible only when its last completed result is at least 26 hours old. This is longer than the 24-hour daily cadence, so normally scanned VMs are not scanned twice while a machine that missed the daily sweep becomes eligible shortly afterward. The daily job does not use the freshness filter and remains the authoritative full scan. Both schedules use the same Detect/Remove deployment choice, and short per-VM leases normally prevent duplicate concurrent commands.
+
+Administrators may disable or change the catch-up cadence under **Automation Account → Shared Resources → Schedules**. Template redeployment restores the selected schedule settings and resets recency state. Catch-up `FreshnessSkipped` and `InProgressSkipped` output records retain current dashboard context but are excluded from cumulative/removal efficacy totals.
 
 ## Variable encryption migration
 

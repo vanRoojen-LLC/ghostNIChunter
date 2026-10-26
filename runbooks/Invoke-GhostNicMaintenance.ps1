@@ -28,7 +28,9 @@ param(
     [Nullable[bool]]$RequireProblemCode45,
     [Nullable[int]]$OfflineRetryCount,
     [Nullable[int]]$OfflineRetryDelayMinutes,
-    [Nullable[bool]]$RestartRemediatedVm
+    [Nullable[bool]]$RestartRemediatedVm,
+    [Nullable[bool]]$UseFreshnessFilter,
+    [Nullable[int]]$FreshnessHours
 )
 
 Set-StrictMode -Version Latest
@@ -81,6 +83,9 @@ if ($OfflineRetryCount -lt 0 -or $OfflineRetryCount -gt 6) { throw 'OfflineRetry
 if ($null -eq $OfflineRetryDelayMinutes) { $OfflineRetryDelayMinutes = 30 }
 if ($OfflineRetryDelayMinutes -lt 0 -or $OfflineRetryDelayMinutes -gt 120) { throw 'OfflineRetryDelayMinutes must be between 0 and 120.' }
 if ($null -eq $RestartRemediatedVm) { $RestartRemediatedVm = $false }
+if ($null -eq $UseFreshnessFilter) { $UseFreshnessFilter = $false }
+if ($null -eq $FreshnessHours) { $FreshnessHours = 26 }
+if ($FreshnessHours -lt 1 -or $FreshnessHours -gt 168) { throw 'FreshnessHours must be between 1 and 168.' }
 $scanExclusions = @($ScanExclusionValues -split '[,;]+' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
 $removalExclusions = @($RemovalExclusionValues -split '[,;]+' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
 
@@ -100,6 +105,161 @@ if ($targetResourceGroupIdList.Count -eq 0) {
 
 $excludedForRemoval = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $vmIdPattern = '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/resourceGroups/(?<resourceGroup>[^/]+)/providers/Microsoft\.Compute/virtualMachines/(?<vmName>[^/]+)$'
+$recencyStateVariableName = 'GhostNicRecencyState'
+$executionId = [guid]::NewGuid().ToString('D')
+
+function ConvertTo-GhostNicStateTable {
+    param($Value)
+
+    $table = @{}
+    if ($null -eq $Value) { return $table }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) { $table[[string]$key] = $Value[$key] }
+        return $table
+    }
+    foreach ($property in $Value.PSObject.Properties) { $table[[string]$property.Name] = $property.Value }
+    return $table
+}
+
+function Get-GhostNicRecencyState {
+    $rawState = Get-AutomationVariable -Name $recencyStateVariableName -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace([string]$rawState)) { return @{} }
+    return ConvertTo-GhostNicStateTable -Value ([string]$rawState | ConvertFrom-Json -ErrorAction Stop)
+}
+
+function Get-GhostNicStateValue {
+    param($Entry, [Parameter(Mandatory)][string]$Name, $Default = $null)
+
+    if ($null -eq $Entry) { return $Default }
+    if ($Entry -is [System.Collections.IDictionary]) {
+        if ($Entry.Contains($Name)) { return $Entry[$Name] }
+        return $Default
+    }
+    $property = $Entry.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $Default
+}
+
+function ConvertTo-GhostNicStateEntry {
+    param($Entry)
+
+    $copy = [ordered]@{}
+    if ($null -eq $Entry) { return $copy }
+    if ($Entry -is [System.Collections.IDictionary]) {
+        foreach ($key in $Entry.Keys) { $copy[[string]$key] = $Entry[$key] }
+    } else {
+        foreach ($property in $Entry.PSObject.Properties) { $copy[[string]$property.Name] = $property.Value }
+    }
+    return $copy
+}
+
+function Set-GhostNicRecencyState {
+    param([Parameter(Mandatory)][hashtable]$State)
+
+    Set-AutomationVariable -Name $recencyStateVariableName -Value ($State | ConvertTo-Json -Depth 8 -Compress) -ErrorAction Stop
+}
+
+function Enter-GhostNicVmLease {
+    param([Parameter(Mandatory)][string]$VmResourceId)
+
+    try {
+        $state = Get-GhostNicRecencyState
+        $key = $VmResourceId.ToLowerInvariant()
+        $entry = if ($state.ContainsKey($key)) { $state[$key] } else { $null }
+        $now = [DateTimeOffset]::UtcNow
+        $leaseUntilText = [string](Get-GhostNicStateValue -Entry $entry -Name 'LeaseUntilUtc' -Default '')
+        $leaseOwner = [string](Get-GhostNicStateValue -Entry $entry -Name 'LeaseOwner' -Default '')
+        $leaseUntil = [DateTimeOffset]::MinValue
+        if ($leaseUntilText -and [DateTimeOffset]::TryParse($leaseUntilText, [ref]$leaseUntil) -and $leaseUntil -gt $now -and $leaseOwner -ne $executionId) {
+            return [pscustomobject]@{ ShouldRun = $false; Reason = 'InProgress'; Entry = $entry; StateAvailable = $true }
+        }
+
+        if ([bool]$UseFreshnessFilter) {
+            $lastCompletedText = [string](Get-GhostNicStateValue -Entry $entry -Name 'LastCompletedUtc' -Default '')
+            $lastCompleted = [DateTimeOffset]::MinValue
+            $maintenanceState = [string](Get-GhostNicStateValue -Entry $entry -Name 'MaintenanceState' -Default '')
+            $recent = $lastCompletedText -and [DateTimeOffset]::TryParse($lastCompletedText, [ref]$lastCompleted) -and $lastCompleted -gt $now.AddHours(-[int]$FreshnessHours)
+            $freshRemovalNeedsWork = $Operation -eq 'Remove' -and $maintenanceState -eq 'CleanupPending'
+            if ($recent -and -not $freshRemovalNeedsWork) {
+                return [pscustomobject]@{ ShouldRun = $false; Reason = 'Fresh'; Entry = $entry; StateAvailable = $true }
+            }
+        }
+
+        $entryData = ConvertTo-GhostNicStateEntry -Entry $entry
+        $entryData['LeaseOwner'] = $executionId
+        $entryData['LeaseUntilUtc'] = $now.AddHours(6).ToString('o')
+        $entryData['LastAttemptUtc'] = $now.ToString('o')
+        $state[$key] = [pscustomobject]$entryData
+        Set-GhostNicRecencyState -State $state
+
+        # Re-read to make concurrent hourly/daily jobs converge on one lease owner.
+        $verifiedState = Get-GhostNicRecencyState
+        $verifiedEntry = if ($verifiedState.ContainsKey($key)) { $verifiedState[$key] } else { $null }
+        if ([string](Get-GhostNicStateValue -Entry $verifiedEntry -Name 'LeaseOwner' -Default '') -ne $executionId) {
+            return [pscustomobject]@{ ShouldRun = $false; Reason = 'InProgress'; Entry = $verifiedEntry; StateAvailable = $true }
+        }
+        return [pscustomobject]@{ ShouldRun = $true; Reason = 'Due'; Entry = $verifiedEntry; StateAvailable = $true }
+    }
+    catch {
+        if ([bool]$UseFreshnessFilter) {
+            return [pscustomobject]@{ ShouldRun = $false; Reason = 'StateUnavailable'; Entry = $null; StateAvailable = $false; Error = $_.Exception.Message }
+        }
+        return [pscustomobject]@{ ShouldRun = $true; Reason = 'StateUnavailable'; Entry = $null; StateAvailable = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Complete-GhostNicVmLease {
+    param(
+        [Parameter(Mandatory)][string]$VmResourceId,
+        [Parameter(Mandatory)]$ResultRecord
+    )
+
+    try {
+        $state = Get-GhostNicRecencyState
+        $key = $VmResourceId.ToLowerInvariant()
+        $entry = if ($state.ContainsKey($key)) { $state[$key] } else { $null }
+        $entryData = ConvertTo-GhostNicStateEntry -Entry $entry
+        $entryData['LastCompletedUtc'] = [DateTimeOffset]::UtcNow.ToString('o')
+        $entryData['DetectedAtUtc'] = [string]$ResultRecord.DetectedAtUtc
+        $entryData['LastOperation'] = [string]$ResultRecord.Operation
+        $entryData['MaintenanceState'] = [string]$ResultRecord.MaintenanceState
+        $entryData['Outcome'] = [string]$ResultRecord.Outcome
+        $entryData['GhostedCount'] = $ResultRecord.GhostedCount
+        $entryData['ValidCount'] = $ResultRecord.ValidCount
+        $entryData['RemovedCount'] = $ResultRecord.RemovedCount
+        $entryData['RemainingCount'] = $ResultRecord.RemainingCount
+        $entryData['RestartRequired'] = $ResultRecord.RestartRequired
+        $entryData['LeaseOwner'] = ''
+        $entryData['LeaseUntilUtc'] = ''
+        $entryData['LastError'] = ''
+        $state[$key] = [pscustomobject]$entryData
+        Set-GhostNicRecencyState -State $state
+    }
+    catch {
+        Write-Warning "Could not persist Ghost NIC recency state for '$VmResourceId': $($_.Exception.Message)"
+    }
+}
+
+function Release-GhostNicVmLease {
+    param([Parameter(Mandatory)][string]$VmResourceId, [string]$ErrorMessage = '')
+
+    try {
+        $state = Get-GhostNicRecencyState
+        $key = $VmResourceId.ToLowerInvariant()
+        if (-not $state.ContainsKey($key)) { return }
+        $entryData = ConvertTo-GhostNicStateEntry -Entry $state[$key]
+        if ([string](Get-GhostNicStateValue -Entry $state[$key] -Name 'LeaseOwner' -Default '') -eq $executionId) {
+            $entryData['LeaseOwner'] = ''
+            $entryData['LeaseUntilUtc'] = ''
+        }
+        $entryData['LastError'] = $ErrorMessage
+        $state[$key] = [pscustomobject]$entryData
+        Set-GhostNicRecencyState -State $state
+    }
+    catch {
+        Write-Warning "Could not release Ghost NIC recency lease for '$VmResourceId': $($_.Exception.Message)"
+    }
+}
 if ([string]::IsNullOrWhiteSpace($SubscriptionId)) {
     $subscriptionSource = if ($targetVmResourceIdList.Count -gt 0) { $targetVmResourceIdList[0] } elseif ($targetResourceGroupIdList.Count -gt 0) { $targetResourceGroupIdList[0] } else { '' }
     $firstTargetSubscriptionMatch = [regex]::Match($subscriptionSource, '^/subscriptions/(?<subscriptionId>[0-9a-fA-F-]{36})/', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
@@ -600,6 +760,37 @@ function Invoke-GhostNicTarget {
         throw "Target is not a full Azure VM resource ID: $vmResourceId"
     }
 
+    $lease = Enter-GhostNicVmLease -VmResourceId $VmResourceId
+    if (-not $lease.ShouldRun) {
+        $priorState = [string](Get-GhostNicStateValue -Entry $lease.Entry -Name 'MaintenanceState' -Default '')
+        $skipState = if ($lease.Reason -eq 'StateUnavailable') { 'AttentionRequired' } elseif ($priorState) { $priorState } else { 'InProgress' }
+        $skipOutcome = switch ($lease.Reason) {
+            'Fresh' { 'FreshnessSkipped' }
+            'InProgress' { 'InProgressSkipped' }
+            default { 'RecencyStateUnavailable' }
+        }
+        [pscustomobject]@{
+            SchemaVersion = '1.0'
+            VmResourceId = $VmResourceId
+            Succeeded = ($lease.Reason -ne 'StateUnavailable')
+            Operation = $Operation
+            PowerState = $CurrentPowerState
+            DetectedAtUtc = [string](Get-GhostNicStateValue -Entry $lease.Entry -Name 'DetectedAtUtc' -Default '')
+            GhostedCount = Get-GhostNicStateValue -Entry $lease.Entry -Name 'GhostedCount'
+            ValidCount = Get-GhostNicStateValue -Entry $lease.Entry -Name 'ValidCount'
+            RemovedCount = Get-GhostNicStateValue -Entry $lease.Entry -Name 'RemovedCount'
+            RemainingCount = Get-GhostNicStateValue -Entry $lease.Entry -Name 'RemainingCount'
+            Outcome = $skipOutcome
+            MaintenanceState = $skipState
+            RestartRequired = [bool](Get-GhostNicStateValue -Entry $lease.Entry -Name 'RestartRequired' -Default $false)
+            CommandIssued = $false
+            FreshnessHours = if ([bool]$UseFreshnessFilter) { [int]$FreshnessHours } else { $null }
+            LastCompletedUtc = [string](Get-GhostNicStateValue -Entry $lease.Entry -Name 'LastCompletedUtc' -Default '')
+            Error = if ($lease.PSObject.Properties['Error']) { [string]$lease.Error } else { '' }
+        } | ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
+        return
+    }
+
     try {
         Set-GhostNicSubscriptionContext -TargetSubscriptionId $match.Groups['subscriptionId'].Value
         $result = Invoke-AzVMRunCommand `
@@ -649,7 +840,7 @@ function Invoke-GhostNicTarget {
         } else {
             'VerifiedClean'
         }
-        [pscustomobject]@{
+        $resultRecord = [pscustomobject]@{
             SchemaVersion = '1.0'
             VmResourceId = $vmResourceId
             Succeeded    = ([int]$guestResult.ExitCode -in @(0, 2) -and -not $restartError)
@@ -676,8 +867,11 @@ function Invoke-GhostNicTarget {
             RemainingDeviceIds = @($guestResult.RemainingDeviceIds)
             DiscoveryCount = [int]$guestResult.DiscoveryCount
             GhostDeviceExamples = @($guestResult.GhostDeviceExamples)
-        } | ConvertTo-Json -Depth 8 -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
+        }
+        Complete-GhostNicVmLease -VmResourceId $VmResourceId -ResultRecord $resultRecord
+        $resultRecord | ConvertTo-Json -Depth 8 -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
     } catch {
+        Release-GhostNicVmLease -VmResourceId $VmResourceId -ErrorMessage $_.Exception.Message
         [pscustomobject]@{
             SchemaVersion = '1.0'
             VmResourceId = $vmResourceId
