@@ -36,19 +36,19 @@ var dailyScheduleName = 'GhostNic-Daily-Detect-1230'
 var dailyScheduleTimeZone = 'America/Los_Angeles'
 var dailyScheduleLocalTime = '12:30'
 var dailyScheduleOperation = enableScheduledRemoval ? 'Remove' : 'Detect'
-var dailyJobScheduleId = guid(automationAccount.id, runbookName, dailyScheduleName)
+var dailyJobScheduleId = guid(automationAccount.id, runbookName, dailyScheduleName, deploymentTime)
 var catchUpScheduleName = 'GhostNic-CatchUp-Hourly'
-var catchUpJobScheduleId = guid(automationAccount.id, runbookName, catchUpScheduleName)
+var catchUpJobScheduleId = guid(automationAccount.id, runbookName, catchUpScheduleName, deploymentTime)
 var scheduleBootstrapRunbookName = 'Initialize-GhostNicSchedule'
-var scheduleBootstrapRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20261026-1.ps1'
+var scheduleBootstrapRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20261026-2.ps1'
 var automationContributorRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f353d9bd-d4a6-484e-a77a-8050b599b867')
-var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20261026-1.ps1'
+var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20261026-2.ps1'
 var configurationRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Configure-GhostNicHunter-20260806.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: '20261026-1'
+  sourceRevision: '20261026-2'
 }
 
 resource scheduleLinkerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -253,7 +253,6 @@ resource dailyDetectionJobSchedule 'Microsoft.Automation/automationAccounts/jobs
       FreshnessHours: catchUpFreshnessHours
       OfflineRetryCount: 2
       OfflineRetryDelayMinutes: 30
-      BootstrapDelaySeconds: 0
     }
     runbook: {
       name: scheduleBootstrapRunbookName
@@ -290,7 +289,6 @@ resource catchUpJobSchedule 'Microsoft.Automation/automationAccounts/jobs@2023-1
       FreshnessHours: catchUpFreshnessHours
       OfflineRetryCount: 0
       OfflineRetryDelayMinutes: 0
-      BootstrapDelaySeconds: 120
     }
     runbook: {
       name: scheduleBootstrapRunbookName

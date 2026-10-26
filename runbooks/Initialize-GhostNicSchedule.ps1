@@ -66,22 +66,11 @@ param(
 
     [Parameter(Mandatory)]
     [ValidateRange(0, 120)]
-    [int]$OfflineRetryDelayMinutes,
-
-    [Parameter(Mandatory)]
-    [ValidateRange(0, 300)]
-    [int]$BootstrapDelaySeconds
+    [int]$OfflineRetryDelayMinutes
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-# Azure Automation can lose one association when two jobSchedules are written to the
-# same runbook concurrently. The deployment delays the catch-up bootstrap so the daily
-# association is fully committed before the second association is reconciled.
-if ($BootstrapDelaySeconds -gt 0) {
-    Start-Sleep -Seconds $BootstrapDelaySeconds
-}
 
 function Get-JobSchedules {
     [CmdletBinding()]
