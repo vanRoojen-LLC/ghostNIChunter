@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.23.1.45101",
-      "templateHash": "14498373447547475356"
+      "templateHash": "11562462596270666706"
     }
   },
   "parameters": {
@@ -352,7 +352,8 @@
           "UseFreshnessFilter": false,
           "FreshnessHours": "[parameters('catchUpFreshnessHours')]",
           "OfflineRetryCount": 2,
-          "OfflineRetryDelayMinutes": 30
+          "OfflineRetryDelayMinutes": 30,
+          "BootstrapDelaySeconds": 0
         },
         "runbook": {
           "name": "[variables('scheduleBootstrapRunbookName')]"
@@ -389,7 +390,8 @@
           "UseFreshnessFilter": true,
           "FreshnessHours": "[parameters('catchUpFreshnessHours')]",
           "OfflineRetryCount": 0,
-          "OfflineRetryDelayMinutes": 0
+          "OfflineRetryDelayMinutes": 0,
+          "BootstrapDelaySeconds": 120
         },
         "runbook": {
           "name": "[variables('scheduleBootstrapRunbookName')]"
@@ -397,6 +399,7 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName'))]",
+        "[resourceId('Microsoft.Automation/automationAccounts/jobs', variables('resolvedAutomationAccountName'), guid(resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName')), 'schedule-bootstrap', parameters('deploymentTime')))]",
         "[resourceId('Microsoft.Automation/automationAccounts/runbooks', variables('resolvedAutomationAccountName'), variables('runbookName'))]",
         "[resourceId('Microsoft.Automation/automationAccounts/runbooks', variables('resolvedAutomationAccountName'), variables('scheduleBootstrapRunbookName'))]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-ghostnic-schedule-{0}', take(uniqueString(resourceGroup().id, variables('resolvedAutomationAccountName')), 10)))]",

@@ -253,6 +253,7 @@ resource dailyDetectionJobSchedule 'Microsoft.Automation/automationAccounts/jobs
       FreshnessHours: catchUpFreshnessHours
       OfflineRetryCount: 2
       OfflineRetryDelayMinutes: 30
+      BootstrapDelaySeconds: 0
     }
     runbook: {
       name: scheduleBootstrapRunbookName
@@ -267,6 +268,7 @@ resource catchUpJobSchedule 'Microsoft.Automation/automationAccounts/jobs@2023-1
     runbook
     scheduleLinkerRole
     scheduleBootstrapRunbook
+    dailyDetectionJobSchedule
   ]
   properties: {
     parameters: {
@@ -288,6 +290,7 @@ resource catchUpJobSchedule 'Microsoft.Automation/automationAccounts/jobs@2023-1
       FreshnessHours: catchUpFreshnessHours
       OfflineRetryCount: 0
       OfflineRetryDelayMinutes: 0
+      BootstrapDelaySeconds: 120
     }
     runbook: {
       name: scheduleBootstrapRunbookName
