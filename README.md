@@ -63,6 +63,102 @@ The deployment creates seven Ghost NIC Hunter Automation variables. The `Encrypt
 
 Azure fixes the encryption mode when each variable is created. Redeploying with the opposite choice does not convert an existing variable and can fail because its encryption state is immutable. See [Manage variables in Azure Automation](https://learn.microsoft.com/en-us/azure/automation/shared-resources/variables).
 
+### New encrypted deployment: runbook order
+
+For a new encrypted installation, deploy with **Encrypt Automation Variables** set to `true` (the default). Use the components in this order:
+
+| Order | Component | Who runs it | Purpose |
+|---|---|---|---|
+| 1 | Portal deployment or `Deploy-GhostNicHunter.ps1` | Operator, once | Creates the Automation account, encrypted variables, managed identity, runbooks, role assignments, monitoring, and daily Detect schedule. |
+| 2 | `Initialize-GhostNicSchedule` | Deployment, automatically | Links the daily Detect schedule during a portal deployment. The CLI deployment performs the equivalent setup directly. Do not start this runbook manually during a normal deployment. |
+| 3 | `Configure-GhostNicHunter` | Operator, only if defaults must change | Preview persistent behavior changes first, then rerun with `ApplyChanges=true`. Skip this runbook when the documented defaults are acceptable. |
+| 4 | `Invoke-GhostNicMaintenance` with `Operation=Detect` | Operator, once for validation; then the schedule | Performs the first read-only scan. Review its output before accepting the scheduled deployment. |
+| 5 | `Invoke-GhostNicMaintenance` with `Operation=Remove` and `ConfirmRemoval=true` | Operator, manually and only when approved | Removes reviewed candidates. Removal is never enabled by the schedule or a persistent variable. |
+
+Do **not** run `Convert-GhostNicHunterVariablesToEncrypted.ps1` for a new deployment. That local helper exists only to convert an existing installation whose variables are currently normal.
+
+#### Azure portal sequence
+
+1. Start the [portal deployment](#portal-deployment), leave **Encrypt Automation Variables** set to `true`, select the target resource groups, and wait for the Azure deployment to complete.
+2. Open the deployed Automation account, select **Runbooks**, and verify that `Invoke-GhostNicMaintenance`, `Configure-GhostNicHunter`, and `Initialize-GhostNicSchedule` are published.
+3. Under **Schedules**, verify that `GhostNic-Daily-Detect-1230` is enabled. Under **Jobs**, verify that the one-time `Initialize-GhostNicSchedule` bootstrap job completed. Do not manually start that runbook unless recovering a failed deployment.
+4. If the default behavior settings are acceptable, skip to step 5. Otherwise, open `Configure-GhostNicHunter`, select **Start**, enter only the intended changes, and leave `ApplyChanges` false. Review the `GHNIC_CONFIG:` output, then start it again with the same settings and `ApplyChanges=true`.
+5. Open `Invoke-GhostNicMaintenance`, select **Start**, and set `Operation` to `Detect`. Leave `ConfirmRemoval` false and leave both target parameters blank to use the resource groups selected at deployment. Review every `GHNIC_RESULT:` output record and resolve scope, permission, or Run Command errors.
+6. The daily schedule can now remain enabled for Detect-only operation. If removal is later approved, first take the required recovery point, review a current Detect job, and then manually start `Invoke-GhostNicMaintenance` with both `Operation=Remove` and `ConfirmRemoval=true`.
+
+Azure's [runbook start guide](https://learn.microsoft.com/en-us/azure/automation/start-runbooks) describes the portal job pane and parameter-entry flow.
+
+#### PowerShell sequence
+
+The following commands use the same order and wait for each job before continuing. Sign in first with `Connect-AzAccount`, then replace the two placeholders:
+
+```powershell
+$automation = @{
+  ResourceGroupName     = '<automation-resource-group>'
+  AutomationAccountName = 'vr-ghostnic-prod'
+}
+
+function Wait-GhostNicJob {
+  param(
+    [Parameter(Mandatory)] $Job,
+    [Parameter(Mandatory)] [hashtable] $Automation
+  )
+
+  do {
+    Start-Sleep -Seconds 5
+    $Job = Get-AzAutomationJob @Automation -Id $Job.JobId
+  } while ($Job.Status -notin @('Completed', 'Failed', 'Stopped', 'Suspended'))
+
+  Get-AzAutomationJobOutput @Automation -Id $Job.JobId -Stream Any
+
+  if ($Job.Status -ne 'Completed') {
+    throw "Automation job $($Job.JobId) ended with status $($Job.Status)."
+  }
+}
+```
+
+If defaults are acceptable, skip configuration. Otherwise, preview the desired persistent changes and review `GHNIC_CONFIG:` before applying the same values:
+
+```powershell
+$settings = @{
+  MaximumCandidateCount = 500
+  PnpCleanWaitSeconds    = 20
+  RequireProblemCode45   = $true
+}
+
+$job = Start-AzAutomationRunbook @automation `
+  -Name 'Configure-GhostNicHunter' `
+  -Parameters $settings
+Wait-GhostNicJob -Job $job -Automation $automation
+
+$settings['ApplyChanges'] = $true
+$job = Start-AzAutomationRunbook @automation `
+  -Name 'Configure-GhostNicHunter' `
+  -Parameters $settings
+Wait-GhostNicJob -Job $job -Automation $automation
+```
+
+Run the first Detect job and review every `GHNIC_RESULT:` record. Omitting target parameters uses the resource groups selected during deployment:
+
+```powershell
+$job = Start-AzAutomationRunbook @automation `
+  -Name 'Invoke-GhostNicMaintenance' `
+  -Parameters @{ Operation = 'Detect' }
+Wait-GhostNicJob -Job $job -Automation $automation
+```
+
+Removal is a separate, manual change. Run it only after the recovery and approval checks in [Remove confirmed ghost NICs](#remove-confirmed-ghost-nics):
+
+```powershell
+$job = Start-AzAutomationRunbook @automation `
+  -Name 'Invoke-GhostNicMaintenance' `
+  -Parameters @{
+    Operation      = 'Remove'
+    ConfirmRemoval = $true
+  }
+Wait-GhostNicJob -Job $job -Automation $automation
+```
+
 ### Conversion options
 
 | Current state | Desired state | Supported path |
