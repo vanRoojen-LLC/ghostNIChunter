@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.23.1.45101",
-      "templateHash": "11562462596270666706"
+      "templateHash": "8551433269779570293"
     }
   },
   "parameters": {
@@ -89,15 +89,15 @@
     "catchUpScheduleName": "GhostNic-CatchUp-Hourly",
     "catchUpJobScheduleId": "[guid(resourceId('Microsoft.Automation/automationAccounts', variables('resolvedAutomationAccountName')), variables('runbookName'), variables('catchUpScheduleName'))]",
     "scheduleBootstrapRunbookName": "Initialize-GhostNicSchedule",
-    "scheduleBootstrapRunbookUri": "https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20261026.ps1",
+    "scheduleBootstrapRunbookUri": "https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20261026-1.ps1",
     "automationContributorRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f353d9bd-d4a6-484e-a77a-8050b599b867')]",
-    "versionedRunbookUri": "https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20261026.ps1",
+    "versionedRunbookUri": "https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20261026-1.ps1",
     "configurationRunbookUri": "https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Configure-GhostNicHunter-20260806.ps1",
     "tags": {
       "managedBy": "vanRoojen LLC",
       "workload": "ghost-nic-hunter",
       "repository": "https://github.com/vanRoojen-LLC/ghostNIChunter",
-      "sourceRevision": "20261026"
+      "sourceRevision": "20261026-1"
     },
     "runtimeVariableDefinitions": [
       {
