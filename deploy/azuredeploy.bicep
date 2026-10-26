@@ -6,8 +6,14 @@ param targetResourceGroupIds string
 @description('Initial storage mode for Ghost NIC Hunter Automation variables. Keep enabled to satisfy encryption policies; disable only when operators must read values in the portal. Existing variables must be deleted and recreated to change modes.')
 param encryptAutomationVariables bool = true
 
-@description('Deployment timestamp used to choose a future first run for the daily schedule.')
+@description('Deployment timestamp used to give each one-time schedule bootstrap job a unique resource name.')
 param deploymentTime string = utcNow()
+
+@description('Run confirmed ghost-NIC removal from the daily schedule. Leave disabled for detection-only deployments.')
+param enableScheduledRemoval bool = false
+
+@description('Restart a VM after scheduled removal reports that a restart is required. Used only when scheduled removal is enabled.')
+param restartRemediatedVms bool = false
 
 var resolvedAutomationAccountName = toLower('aa-ghostnic-${take(uniqueString(subscription().id, resourceGroup().id, 'ghostnic'), 10)}')
 var resolvedTargetResourceGroupIds = [for targetResourceGroupId in split(targetResourceGroupIds, ','): trim(targetResourceGroupId)]
@@ -15,18 +21,19 @@ var runbookName = 'Invoke-GhostNicMaintenance'
 var configurationRunbookName = 'Configure-GhostNicHunter'
 var dailyScheduleName = 'GhostNic-Daily-Detect-1230'
 var dailyScheduleTimeZone = 'America/Los_Angeles'
-var dailyScheduleStartTime = '${substring(dateTimeAdd(deploymentTime, 'P1D'), 0, 10)}T12:30:00'
+var dailyScheduleLocalTime = '12:30'
+var dailyScheduleOperation = enableScheduledRemoval ? 'Remove' : 'Detect'
 var dailyJobScheduleId = guid(automationAccount.id, runbookName, dailyScheduleName)
 var scheduleBootstrapRunbookName = 'Initialize-GhostNicSchedule'
-var scheduleBootstrapRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20260803-7.ps1'
+var scheduleBootstrapRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Initialize-GhostNicSchedule-20261026.ps1'
 var automationContributorRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f353d9bd-d4a6-484e-a77a-8050b599b867')
-var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20260806.ps1'
+var versionedRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Invoke-GhostNicMaintenance-20261026.ps1'
 var configurationRunbookUri = 'https://raw.githubusercontent.com/vanRoojen-LLC/ghostNIChunter/main/runbooks/Configure-GhostNicHunter-20260806.ps1'
 var tags = {
   managedBy: 'vanRoojen LLC'
   workload: 'ghost-nic-hunter'
   repository: 'https://github.com/vanRoojen-LLC/ghostNIChunter'
-  sourceRevision: '20260806'
+  sourceRevision: '20261026'
 }
 
 resource scheduleLinkerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -158,18 +165,6 @@ resource configurationRunbook 'Microsoft.Automation/automationAccounts/runbooks@
   }
 }
 
-resource dailyDetectionSchedule 'Microsoft.Automation/automationAccounts/schedules@2023-11-01' = {
-  parent: automationAccount
-  name: dailyScheduleName
-  properties: {
-    description: 'Runs Ghost NIC detection daily at 12:30 PM Pacific time. Administrators can adjust this schedule in Azure Automation.'
-    frequency: 'Day'
-    interval: 1
-    startTime: dailyScheduleStartTime
-    timeZone: dailyScheduleTimeZone
-  }
-}
-
 resource scheduleLinkerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(automationAccount.id, scheduleLinkerIdentity.id, automationContributorRoleDefinitionId)
   scope: automationAccount
@@ -189,7 +184,7 @@ resource scheduleBootstrapRunbook 'Microsoft.Automation/automationAccounts/runbo
   ]
   tags: union(tags, { component: 'schedule-linker' })
   properties: {
-    description: 'Idempotently links the Ghost NIC maintenance runbook to its daily schedule.'
+    description: 'Idempotently reconciles the Ghost NIC daily schedule and its maintenance-runbook association.'
     runbookType: 'PowerShell'
     logProgress: false
     logVerbose: true
@@ -200,15 +195,15 @@ resource scheduleBootstrapRunbook 'Microsoft.Automation/automationAccounts/runbo
   }
 }
 
-// Job schedules are create-only, so a small Automation job checks before creating the
-// association. This stays inside Azure Automation and does not require Deployment Scripts,
-// temporary storage accounts, container instances, or a policy exemption.
+// Job schedules are create-only, so a small Automation job creates or updates the
+// time-zone-correct schedule and reconciles its association. This stays inside Azure
+// Automation and does not require Deployment Scripts, temporary storage accounts,
+// container instances, or a policy exemption.
 resource dailyDetectionJobSchedule 'Microsoft.Automation/automationAccounts/jobs@2023-11-01' = {
   parent: automationAccount
   name: guid(automationAccount.id, 'schedule-bootstrap', deploymentTime)
   dependsOn: [
     runbook
-    dailyDetectionSchedule
     scheduleLinkerRole
     scheduleBootstrapRunbook
   ]
@@ -220,6 +215,11 @@ resource dailyDetectionJobSchedule 'Microsoft.Automation/automationAccounts/jobs
       JobScheduleId: dailyJobScheduleId
       ScheduleLinkerClientId: scheduleLinkerIdentity.properties.clientId
       AzureEnvironmentName: environment().name
+      ScheduleTimeZone: dailyScheduleTimeZone
+      ScheduleLocalTime: dailyScheduleLocalTime
+      ScheduledOperation: dailyScheduleOperation
+      ScheduledConfirmRemoval: enableScheduledRemoval
+      ScheduledRestartRemediatedVm: enableScheduledRemoval && restartRemediatedVms
     }
     runbook: {
       name: scheduleBootstrapRunbookName
@@ -278,3 +278,5 @@ output workspaceId string = workspaceId
 output workbookId string = workbook.id
 output dailyScheduleName string = dailyScheduleName
 output dailyScheduleTimeZone string = dailyScheduleTimeZone
+output dailyScheduleLocalTime string = dailyScheduleLocalTime
+output dailyScheduleOperation string = dailyScheduleOperation

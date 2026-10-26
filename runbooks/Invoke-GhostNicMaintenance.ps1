@@ -25,7 +25,10 @@ param(
     [string]$ScanExclusionValues = '',
     [string]$RemovalExclusionValues = '',
     [Nullable[int]]$PnpCleanWaitSeconds,
-    [Nullable[bool]]$RequireProblemCode45
+    [Nullable[bool]]$RequireProblemCode45,
+    [Nullable[int]]$OfflineRetryCount,
+    [Nullable[int]]$OfflineRetryDelayMinutes,
+    [Nullable[bool]]$RestartRemediatedVm
 )
 
 Set-StrictMode -Version Latest
@@ -73,6 +76,11 @@ if ([string]::IsNullOrWhiteSpace($RemovalExclusionValues)) { $RemovalExclusionVa
 if ($null -eq $PnpCleanWaitSeconds) { $PnpCleanWaitSeconds = [int](Get-GhostNicAutomationVariable 'GhostNicPnpCleanWaitSeconds' 10) }
 if ($PnpCleanWaitSeconds -lt 0 -or $PnpCleanWaitSeconds -gt 300) { throw 'GhostNicPnpCleanWaitSeconds must be between 0 and 300.' }
 if ($null -eq $RequireProblemCode45) { $RequireProblemCode45 = [System.Convert]::ToBoolean((Get-GhostNicAutomationVariable 'GhostNicRequireProblemCode45' $true)) }
+if ($null -eq $OfflineRetryCount) { $OfflineRetryCount = 2 }
+if ($OfflineRetryCount -lt 0 -or $OfflineRetryCount -gt 6) { throw 'OfflineRetryCount must be between 0 and 6.' }
+if ($null -eq $OfflineRetryDelayMinutes) { $OfflineRetryDelayMinutes = 30 }
+if ($OfflineRetryDelayMinutes -lt 0 -or $OfflineRetryDelayMinutes -gt 120) { throw 'OfflineRetryDelayMinutes must be between 0 and 120.' }
+if ($null -eq $RestartRemediatedVm) { $RestartRemediatedVm = $false }
 $scanExclusions = @($ScanExclusionValues -split '[,;]+' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
 $removalExclusions = @($RemovalExclusionValues -split '[,;]+' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
 
@@ -178,6 +186,7 @@ foreach ($targetGroupScope in $targetGroupScopes) {
 
 $vmPowerStateByResourceId = @{}
 $eligibleVmResourceIds = [System.Collections.Generic.List[string]]::new()
+$deferredVmResourceIds = [System.Collections.Generic.List[string]]::new()
 foreach ($vmResourceId in @($targetVmResourceIdList | Select-Object -Unique)) {
     $vmResourceIdMatch = [regex]::Match($vmResourceId, $vmIdPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     if (-not $vmResourceIdMatch.Success) { throw "Target is not a full Azure VM resource ID: $vmResourceId" }
@@ -189,14 +198,18 @@ foreach ($vmResourceId in @($targetVmResourceIdList | Select-Object -Unique)) {
     $exclusion = if ($vm.Tags) { [string]$vm.Tags[$ExclusionTagName] } else { '' }
     $values = @($exclusion -split '[,;]+' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
     if (@($values | Where-Object { $_ -in $scanExclusions }).Count -gt 0) {
-        [pscustomobject]@{ SchemaVersion = '1.0'; VmResourceId = $vmResourceId; Succeeded = $true; Outcome = 'Excluded'; ExclusionType = 'scan'; PowerState = $powerState; Operation = $Operation; CommandIssued = $false } |
+        [pscustomobject]@{ SchemaVersion = '1.0'; VmResourceId = $vmResourceId; Succeeded = $true; Outcome = 'Excluded'; MaintenanceState = 'Excluded'; ExclusionType = 'scan'; PowerState = $powerState; Operation = $Operation; CommandIssued = $false } |
             ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
         continue
     }
     if ($Operation -eq 'Remove' -and @($values | Where-Object { $_ -in $removalExclusions }).Count -gt 0) { [void]$excludedForRemoval.Add($vmResourceId) }
-    if ($powerState -ne 'VM running') {
-        [pscustomobject]@{ SchemaVersion = '1.0'; VmResourceId = $vmResourceId; Succeeded = $false; Outcome = 'OfflineSkipped'; PowerState = $powerState; Operation = $Operation; CommandIssued = $false } |
+    if ($excludedForRemoval.Contains($vmResourceId)) {
+        [pscustomobject]@{ SchemaVersion = '1.0'; VmResourceId = $vmResourceId; Succeeded = $true; Outcome = 'Excluded'; MaintenanceState = 'Excluded'; ExclusionType = 'remove'; PowerState = $powerState; Operation = $Operation; CommandIssued = $false } |
             ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
+        continue
+    }
+    if ($powerState -ne 'VM running') {
+        [void]$deferredVmResourceIds.Add($vmResourceId)
         continue
     }
     [void]$eligibleVmResourceIds.Add($vmResourceId)
@@ -312,6 +325,7 @@ $activePnpIds = @($activeAdapterSnapshot | ForEach-Object PnpDeviceId)
 if ($activePnpIds.Count -eq 0) { throw 'SafetyAbort: no active network adapter PnP IDs were observed.' }
 $protectedAdapterSnapshot = @($activeAdapterSnapshot | Where-Object Status -eq 'Up')
 if ($protectedAdapterSnapshot.Count -eq 0) { $protectedAdapterSnapshot = @($activeAdapterSnapshot) }
+$allNetworkPnpDevices = @(Get-PnpDevice -Class Net -ErrorAction Stop | Where-Object { $_.InstanceId })
 $presentPnpIds = @(
     Get-PnpDevice -Class Net -PresentOnly -ErrorAction Stop |
         Where-Object { $_.InstanceId } |
@@ -319,6 +333,7 @@ $presentPnpIds = @(
 )
 $ghosted = [System.Collections.Generic.List[object]]::new()
 $valid = [System.Collections.Generic.List[object]]::new()
+$candidateEntriesById = @{}
 
 function Get-NicRegistryEntries {
     param([Parameter(Mandatory)][string]$BusName)
@@ -351,23 +366,61 @@ function Get-NicRegistryEntries {
     }
 }
 
+function Add-NicCandidateEntry {
+    param([Parameter(Mandatory)]$Entry)
+
+    $normalizedId = & $normalize $Entry.PnpDeviceId
+    if (-not $normalizedId -or $candidateEntriesById.ContainsKey($normalizedId)) { return }
+    $candidateEntriesById[$normalizedId] = $Entry
+}
+
 foreach ($bus in @('PCI', 'VMBUS')) {
     foreach ($entry in @(Get-NicRegistryEntries -BusName $bus)) {
-        $normalizedId = & $normalize $entry.PnpDeviceId
-        if ($entry.ClassGuid -ne '{4d36e972-e325-11ce-bfc1-08002be10318}' -or $activePnpIds -contains $normalizedId -or $presentPnpIds -contains $normalizedId) {
-            $valid.Add($entry)
-        } else {
-            $pnp = Get-PnpDevice -InstanceId $entry.PnpDeviceId -ErrorAction SilentlyContinue
-            $problemCode = $null
-            if ($pnp) {
-                $problemProperty = $pnp.PSObject.Properties['Problem']
-                if ($problemProperty -and $null -ne $problemProperty.Value) {
-                    $problemCode = [int]$problemProperty.Value
-                }
-            }
-            $ghosted.Add([pscustomobject]@{ Entry = $entry; Pnp = $pnp; PnpDeviceId = $entry.PnpDeviceId; ProblemCode = $problemCode })
+        if ($entry.ClassGuid -and $entry.ClassGuid -ine '{4d36e972-e325-11ce-bfc1-08002be10318}') { continue }
+        Add-NicCandidateEntry -Entry $entry
+    }
+}
+
+# Microsoft separately recommends a full Mellanox PnP inventory because stale device
+# nodes are not always represented by the two registry buses above. Include every
+# Network-class Mellanox node and every node using a targeted Azure NIC service.
+foreach ($pnpDevice in $allNetworkPnpDevices) {
+    $serviceProperty = Get-PnpDeviceProperty -InstanceId $pnpDevice.InstanceId -KeyName 'DEVPKEY_Device_Service' -ErrorAction SilentlyContinue
+    $service = if ($serviceProperty) { [string]$serviceProperty.Data } else { '' }
+    $friendlyName = if ($pnpDevice.FriendlyName) { [string]$pnpDevice.FriendlyName } else { 'Unknown Device' }
+    if ($service -notin @('netvsc', 'mlx5', 'mlx4_bus') -and $friendlyName -notlike '*Mellanox*') { continue }
+    Add-NicCandidateEntry -Entry ([pscustomobject]@{
+            RegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($pnpDevice.InstanceId)"
+            PnpDeviceId = [string]$pnpDevice.InstanceId
+            Service = $service
+            Description = $friendlyName
+            ClassGuid = '{4d36e972-e325-11ce-bfc1-08002be10318}'
+            DiscoverySource = 'PnpInventory'
+        })
+}
+
+foreach ($entry in $candidateEntriesById.Values) {
+    $normalizedId = & $normalize $entry.PnpDeviceId
+    if ($activePnpIds -contains $normalizedId) {
+        $valid.Add($entry)
+        continue
+    }
+
+    $pnp = Get-PnpDevice -InstanceId $entry.PnpDeviceId -ErrorAction SilentlyContinue
+    $problemCode = $null
+    if ($pnp) {
+        $problemProperty = $pnp.PSObject.Properties['Problem']
+        if ($problemProperty -and $null -ne $problemProperty.Value) {
+            $problemCode = [int]$problemProperty.Value
         }
     }
+    $ghosted.Add([pscustomobject]@{
+            Entry = $entry
+            Pnp = $pnp
+            PnpDeviceId = $entry.PnpDeviceId
+            ProblemCode = $problemCode
+            IsPresent = ($presentPnpIds -contains $normalizedId)
+        })
 }
 
 $outcome = if ($ghosted.Count -eq 0) { 'Clean' } else { 'Detected' }
@@ -393,9 +446,12 @@ if ($ghosted.Count -gt $MaximumCandidateCount) {
     $pnpCleanExitCode = [int]$pnpCleanProcess.ExitCode
     Start-Sleep -Seconds $PnpCleanWaitSeconds
     foreach ($candidate in $ghosted) {
-        $method = 'PnpClean'; $nativeExitCode = $pnpCleanExitCode; $finalState = 'Present'
+        $method = 'PnpClean'
+        $nativeExitCode = $pnpCleanExitCode
+        $registryFallbackUsed = $false
+        $removalAuthorizedForCandidate = (-not $requireProblemCode45Enabled -or $candidate.ProblemCode -eq 45 -or -not $candidate.IsPresent)
         if (Get-PnpDevice -InstanceId $candidate.PnpDeviceId -ErrorAction SilentlyContinue) {
-            if (-not $requireProblemCode45Enabled -or $candidate.ProblemCode -eq 45) {
+            if ($removalAuthorizedForCandidate) {
                 $method = 'pnputil'
                 $pnputilProcess = Start-Process `
                     -FilePath "$env:WINDIR\System32\pnputil.exe" `
@@ -407,8 +463,49 @@ if ($ghosted.Count -gt $MaximumCandidateCount) {
                 $nativeExitCode = [int]$pnputilProcess.ExitCode
             } else { $method = 'Ambiguous'; $nativeExitCode = 4 }
         }
-        if (-not (Get-PnpDevice -InstanceId $candidate.PnpDeviceId -ErrorAction SilentlyContinue)) { $finalState = 'Removed' }
-        $deviceResults.Add([pscustomobject]@{ PnpDeviceId=$candidate.PnpDeviceId; Service=$candidate.Entry.Service; FriendlyName=$candidate.Entry.Description; ProblemCode=$candidate.ProblemCode; Method=$method; NativeExitCode=$nativeExitCode; FinalState=$finalState })
+
+        # Run Command executes as LocalSystem. Match Microsoft's cleanup behavior by
+        # removing a leftover candidate key only after the active-adapter exclusion and
+        # optional problem-code gate have both passed.
+        $registryPath = [string]$candidate.Entry.RegistryPath
+        if ($removalAuthorizedForCandidate -and $registryPath -and (Test-Path -LiteralPath $registryPath)) {
+            try {
+                Remove-Item -LiteralPath $registryPath -Recurse -Force -ErrorAction Stop
+                $registryFallbackUsed = $true
+                $method = "$method+Registry"
+            }
+            catch {
+                $method = "$method+RegistryFailed"
+                if ($nativeExitCode -eq 0) { $nativeExitCode = 5 }
+            }
+        }
+
+        $deviceResults.Add([pscustomobject]@{
+                PnpDeviceId = $candidate.PnpDeviceId
+                Service = $candidate.Entry.Service
+                FriendlyName = $candidate.Entry.Description
+                ProblemCode = $candidate.ProblemCode
+                WasPresent = [bool]$candidate.IsPresent
+                Method = $method
+                NativeExitCode = $nativeExitCode
+                RegistryFallbackUsed = $registryFallbackUsed
+                RegistryPath = $registryPath
+                FinalState = 'PendingVerification'
+            })
+    }
+
+    $scanProcess = Start-Process `
+        -FilePath "$env:WINDIR\System32\pnputil.exe" `
+        -ArgumentList @('/scan-devices') `
+        -WindowStyle Hidden `
+        -Wait `
+        -PassThru `
+        -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    foreach ($deviceResult in $deviceResults) {
+        $pnpStillExists = $null -ne (Get-PnpDevice -InstanceId $deviceResult.PnpDeviceId -ErrorAction SilentlyContinue)
+        $registryStillExists = $deviceResult.RegistryPath -and (Test-Path -LiteralPath $deviceResult.RegistryPath)
+        $deviceResult.FinalState = if (-not $pnpStillExists -and -not $registryStillExists) { 'Removed' } else { 'Present' }
     }
     $remaining = @($deviceResults | Where-Object FinalState -ne 'Removed')
 
@@ -468,6 +565,7 @@ if ($ghosted.Count -gt $MaximumCandidateCount) {
     GhostedCount    = $ghosted.Count
     ValidCount      = $valid.Count
     RemovedCount    = @($deviceResults | Where-Object FinalState -eq 'Removed').Count
+    RemainingCount  = if ($Operation -eq 'Remove' -and $deviceResults.Count -gt 0) { @($deviceResults | Where-Object FinalState -ne 'Removed').Count } else { $ghosted.Count }
     RestartRequired = (@($deviceResults | Where-Object FinalState -eq 'Removed').Count -gt 0)
     PnpCleanExitCode = $pnpCleanExitCode
     ActiveAdapterValidation = $adapterValidation
@@ -475,16 +573,28 @@ if ($ghosted.Count -gt $MaximumCandidateCount) {
     MissingActiveAdapters = @($missingActiveAdapters)
     AddedActiveAdapters = @($addedActiveAdapters | Select-Object Name, Status, PnpDeviceId, InterfaceGuid, MacAddress)
     ReenumeratedActiveAdapters = @($reenumeratedActiveAdapters)
+    RemovalMethods = @($deviceResults | Group-Object Method | ForEach-Object { [pscustomobject]@{ Method = $_.Name; Count = $_.Count } })
+    RemainingDeviceIds = @($deviceResults | Where-Object FinalState -ne 'Removed' | Select-Object -First 20 -ExpandProperty PnpDeviceId)
+    DiscoveryCount = $candidateEntriesById.Count
+    GhostDeviceExamples = @($ghosted | Select-Object -First 10 | ForEach-Object {
+            [pscustomobject]@{
+                PnpDeviceId = $_.PnpDeviceId
+                FriendlyName = $_.Entry.Description
+                Service = $_.Entry.Service
+                ProblemCode = $_.ProblemCode
+                IsPresent = [bool]$_.IsPresent
+            }
+        })
 } | ConvertTo-Json -Depth 8 -Compress | ForEach-Object { "GHNIC_GUEST_RESULT:$PSItem" }
 '@
 
-foreach ($vmResourceId in $targetVmResourceIdList) {
-    $currentPowerState = if ($vmPowerStateByResourceId.ContainsKey($vmResourceId)) { [string]$vmPowerStateByResourceId[$vmResourceId] } else { 'Unknown' }
-    if ($excludedForRemoval.Contains($vmResourceId)) {
-        [pscustomobject]@{ SchemaVersion = '1.0'; VmResourceId = $vmResourceId; Succeeded = $true; Outcome = 'Excluded'; ExclusionType = 'remove'; PowerState = $currentPowerState; Operation = $Operation; CommandIssued = $false } |
-            ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
-        continue
-    }
+function Invoke-GhostNicTarget {
+    param(
+        [Parameter(Mandatory)][string]$VmResourceId,
+        [Parameter(Mandatory)][string]$CurrentPowerState,
+        [Parameter(Mandatory)][int]$RetryAttempt
+    )
+
     $match = [regex]::Match($vmResourceId, $vmIdPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     if (-not $match.Success) {
         throw "Target is not a full Azure VM resource ID: $vmResourceId"
@@ -509,24 +619,63 @@ foreach ($vmResourceId in $targetVmResourceIdList) {
             throw "VM Run Command completed without a parseable Ghost NIC Hunter guest result. Guest output: $guestDiagnostic"
         }
         $guestResult = $guestMatch.Groups['json'].Value | ConvertFrom-Json -ErrorAction Stop
+        $restartIssued = $false
+        $restartError = ''
+        if ($Operation -eq 'Remove' -and [bool]$RestartRemediatedVm -and [int]$guestResult.ExitCode -eq 0 -and [string]$guestResult.Outcome -eq 'Remediated' -and [bool]$guestResult.RestartRequired -and [int]$guestResult.RemovedCount -gt 0) {
+            try {
+                Restart-AzVM `
+                    -ResourceGroupName $match.Groups['resourceGroup'].Value `
+                    -Name $match.Groups['vmName'].Value `
+                    -Force `
+                    -NoWait `
+                    -ErrorAction Stop | Out-Null
+                $restartIssued = $true
+            }
+            catch {
+                $restartError = $_.Exception.Message
+            }
+        }
+
+        $maintenanceState = if ($restartError) {
+            'RebootFailed'
+        } elseif ($restartIssued) {
+            'RestartInitiated'
+        } elseif ([string]$guestResult.Outcome -in @('SafetyAbort', 'PartialFailure')) {
+            'AttentionRequired'
+        } elseif ($Operation -eq 'Remove' -and [int]$guestResult.RemovedCount -gt 0 -and [bool]$guestResult.RestartRequired) {
+            'RebootPending'
+        } elseif ([int]$guestResult.GhostedCount -gt 0) {
+            'CleanupPending'
+        } else {
+            'VerifiedClean'
+        }
         [pscustomobject]@{
             SchemaVersion = '1.0'
             VmResourceId = $vmResourceId
-            Succeeded    = ([int]$guestResult.ExitCode -in @(0, 2))
+            Succeeded    = ([int]$guestResult.ExitCode -in @(0, 2) -and -not $restartError)
             Operation    = $Operation
-            PowerState   = $currentPowerState
+            PowerState   = $CurrentPowerState
             DetectedAtUtc = $guestResult.DetectedAtUtc
             GhostedCount = [int]$guestResult.GhostedCount
             ValidCount = [int]$guestResult.ValidCount
             RemovedCount = [int]$guestResult.RemovedCount
-            Outcome = [string]$guestResult.Outcome
-            ExitCode = [int]$guestResult.ExitCode
+            RemainingCount = [int]$guestResult.RemainingCount
+            Outcome = if ($restartError) { 'RestartFailed' } else { [string]$guestResult.Outcome }
+            MaintenanceState = $maintenanceState
+            ExitCode = if ($restartError) { 5 } else { [int]$guestResult.ExitCode }
             RestartRequired = [bool]$guestResult.RestartRequired
+            RestartIssued = $restartIssued
+            RestartError = $restartError
+            RetryAttempt = $RetryAttempt
             ActiveAdapterValidation = [string]$guestResult.ActiveAdapterValidation
             ActiveAdapterValidationAttempts = [int]$guestResult.ActiveAdapterValidationAttempts
             MissingActiveAdapters = @($guestResult.MissingActiveAdapters)
             AddedActiveAdapters = @($guestResult.AddedActiveAdapters)
             ReenumeratedActiveAdapters = @($guestResult.ReenumeratedActiveAdapters)
+            RemovalMethods = @($guestResult.RemovalMethods)
+            RemainingDeviceIds = @($guestResult.RemainingDeviceIds)
+            DiscoveryCount = [int]$guestResult.DiscoveryCount
+            GhostDeviceExamples = @($guestResult.GhostDeviceExamples)
         } | ConvertTo-Json -Depth 8 -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
     } catch {
         [pscustomobject]@{
@@ -534,8 +683,50 @@ foreach ($vmResourceId in $targetVmResourceIdList) {
             VmResourceId = $vmResourceId
             Succeeded    = $false
             Operation    = $Operation
-            PowerState   = $currentPowerState
+            PowerState   = $CurrentPowerState
+            Outcome      = 'RunCommandFailed'
+            MaintenanceState = 'AttentionRequired'
+            RetryAttempt = $RetryAttempt
             Error        = $_.Exception.Message
         } | ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
     }
+}
+
+foreach ($vmResourceId in $targetVmResourceIdList) {
+    $currentPowerState = if ($vmPowerStateByResourceId.ContainsKey($vmResourceId)) { [string]$vmPowerStateByResourceId[$vmResourceId] } else { 'Unknown' }
+    Invoke-GhostNicTarget -VmResourceId $vmResourceId -CurrentPowerState $currentPowerState -RetryAttempt 0
+}
+
+$remainingOfflineVmResourceIds = @($deferredVmResourceIds)
+for ($retryAttempt = 1; $retryAttempt -le $OfflineRetryCount -and $remainingOfflineVmResourceIds.Count -gt 0; $retryAttempt++) {
+    if ($OfflineRetryDelayMinutes -gt 0) { Start-Sleep -Seconds ([int]$OfflineRetryDelayMinutes * 60) }
+    $stillOfflineVmResourceIds = [System.Collections.Generic.List[string]]::new()
+    foreach ($vmResourceId in $remainingOfflineVmResourceIds) {
+        $match = [regex]::Match($vmResourceId, $vmIdPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        Set-GhostNicSubscriptionContext -TargetSubscriptionId $match.Groups['subscriptionId'].Value
+        $vmStatus = Get-AzVM -ResourceId $vmResourceId -Status -ErrorAction Stop
+        $currentPowerState = Get-GhostNicVmPowerState -VmStatus $vmStatus
+        $vmPowerStateByResourceId[$vmResourceId] = $currentPowerState
+        if ($currentPowerState -eq 'VM running') {
+            Invoke-GhostNicTarget -VmResourceId $vmResourceId -CurrentPowerState $currentPowerState -RetryAttempt $retryAttempt
+        } else {
+            [void]$stillOfflineVmResourceIds.Add($vmResourceId)
+        }
+    }
+    $remainingOfflineVmResourceIds = @($stillOfflineVmResourceIds)
+}
+
+foreach ($vmResourceId in $remainingOfflineVmResourceIds) {
+    $currentPowerState = if ($vmPowerStateByResourceId.ContainsKey($vmResourceId)) { [string]$vmPowerStateByResourceId[$vmResourceId] } else { 'Unknown' }
+    [pscustomobject]@{
+        SchemaVersion = '1.0'
+        VmResourceId = $vmResourceId
+        Succeeded = $false
+        Outcome = 'OfflineSkipped'
+        MaintenanceState = 'OfflineSkipped'
+        PowerState = $currentPowerState
+        Operation = $Operation
+        CommandIssued = $false
+        RetryAttempts = [int]$OfflineRetryCount
+    } | ConvertTo-Json -Compress | ForEach-Object { "GHNIC_RESULT:$PSItem" } | Write-Output
 }

@@ -26,6 +26,10 @@ param(
 
     [string]$DailyScheduleTimeZone = 'America/Los_Angeles',
 
+    [bool]$EnableScheduledRemoval = $false,
+
+    [bool]$RestartRemediatedVms = $false,
+
     [bool]$EncryptAutomationVariables = $true,
 
     [hashtable]$Tags = @{
@@ -37,6 +41,38 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Get-ScheduleTimeZoneInfo {
+    param([Parameter(Mandatory)][string]$Id)
+
+    try { return [System.TimeZoneInfo]::FindSystemTimeZoneById($Id) }
+    catch {
+        $windowsTimeZoneByIanaId = @{
+            'America/Los_Angeles' = 'Pacific Standard Time'
+            'America/Denver' = 'Mountain Standard Time'
+            'America/Chicago' = 'Central Standard Time'
+            'America/New_York' = 'Eastern Standard Time'
+            'Etc/UTC' = 'UTC'
+            'UTC' = 'UTC'
+        }
+        if (-not $windowsTimeZoneByIanaId.ContainsKey($Id)) { throw }
+        return [System.TimeZoneInfo]::FindSystemTimeZoneById($windowsTimeZoneByIanaId[$Id])
+    }
+}
+
+function Get-NextDailyScheduleStart {
+    param(
+        [Parameter(Mandatory)][string]$TimeZoneId,
+        [Parameter(Mandatory)][string]$LocalTime
+    )
+
+    $timeZone = Get-ScheduleTimeZoneInfo -Id $TimeZoneId
+    $timeParts = $LocalTime.Split(':')
+    $nowLocal = [System.TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $timeZone)
+    $candidate = [DateTime]::SpecifyKind($nowLocal.Date.AddHours([int]$timeParts[0]).AddMinutes([int]$timeParts[1]), [DateTimeKind]::Unspecified)
+    if ($candidate -le $nowLocal.AddMinutes(5)) { $candidate = $candidate.AddDays(1) }
+    return [DateTimeOffset]::new($candidate, $timeZone.GetUtcOffset($candidate))
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $templateFile = Join-Path $repoRoot 'infra/main.bicep'
@@ -165,26 +201,62 @@ foreach ($legacyVariable in $legacyVariables) {
 }
 
 $dailyScheduleName = 'GhostNic-Daily-Detect-1230'
+$dailyScheduleLocalTime = '12:30'
+$dailyScheduleOperation = if ($EnableScheduledRemoval) { 'Remove' } else { 'Detect' }
+$dailyScheduleParameters = @{ Operation = $dailyScheduleOperation }
+if ($EnableScheduledRemoval) {
+    $dailyScheduleParameters.ConfirmRemoval = $true
+    $dailyScheduleParameters.RestartRemediatedVm = [bool]$RestartRemediatedVms
+}
+$dailyScheduleStart = Get-NextDailyScheduleStart -TimeZoneId $DailyScheduleTimeZone -LocalTime $dailyScheduleLocalTime
+$scheduledRunbook = Get-AzAutomationScheduledRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -ScheduleName $dailyScheduleName -RunbookName $runbookName -ErrorAction SilentlyContinue
+if ($scheduledRunbook -and $PSCmdlet.ShouldProcess($runbookName, "Reconcile association with $dailyScheduleName")) {
+    Unregister-AzAutomationScheduledRunbook `
+        -ResourceGroupName $ResourceGroupName `
+        -AutomationAccountName $AutomationAccountName `
+        -RunbookName $runbookName `
+        -ScheduleName $dailyScheduleName `
+        -Force
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $scheduledRunbook = Get-AzAutomationScheduledRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -ScheduleName $dailyScheduleName -RunbookName $runbookName -ErrorAction SilentlyContinue
+        if (-not $scheduledRunbook) { break }
+        if ($attempt -eq 30) { throw "Timed out waiting for the existing $dailyScheduleName association to be deleted." }
+        Start-Sleep -Seconds 5
+    }
+}
 $dailySchedule = Get-AzAutomationSchedule -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $dailyScheduleName -ErrorAction SilentlyContinue
+if ($dailySchedule -and $PSCmdlet.ShouldProcess($dailyScheduleName, 'Replace schedule to correct its local start time')) {
+    Remove-AzAutomationSchedule `
+        -ResourceGroupName $ResourceGroupName `
+        -AutomationAccountName $AutomationAccountName `
+        -Name $dailyScheduleName `
+        -Force
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $dailySchedule = Get-AzAutomationSchedule -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $dailyScheduleName -ErrorAction SilentlyContinue
+        if (-not $dailySchedule) { break }
+        if ($attempt -eq 30) { throw "Timed out waiting for schedule '$dailyScheduleName' to be deleted." }
+        Start-Sleep -Seconds 5
+    }
+    $dailySchedule = $null
+}
 if (-not $dailySchedule -and $PSCmdlet.ShouldProcess($dailyScheduleName, "Create daily 12:30 PM schedule in $DailyScheduleTimeZone")) {
     $dailySchedule = New-AzAutomationSchedule `
         -ResourceGroupName $ResourceGroupName `
         -AutomationAccountName $AutomationAccountName `
         -Name $dailyScheduleName `
-        -StartTime ((Get-Date '12:30:00').AddDays(1)) `
+        -StartTime $dailyScheduleStart `
         -DayInterval 1 `
         -TimeZone $DailyScheduleTimeZone `
-        -Description 'Runs Ghost NIC detection daily at 12:30 PM local time. Administrators can adjust this schedule in Azure Automation.'
+        -Description "Runs Ghost NIC $($dailyScheduleOperation.ToLowerInvariant()) daily at 12:30 PM local time. Administrators can adjust this schedule in Azure Automation."
 }
 
-$scheduledRunbook = Get-AzAutomationScheduledRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -ScheduleName $dailyScheduleName -RunbookName $runbookName -ErrorAction SilentlyContinue
-if (-not $scheduledRunbook -and $PSCmdlet.ShouldProcess($runbookName, "Link to $dailyScheduleName in Detect mode")) {
+if ($PSCmdlet.ShouldProcess($runbookName, "Link to $dailyScheduleName in $dailyScheduleOperation mode")) {
     Register-AzAutomationScheduledRunbook `
         -ResourceGroupName $ResourceGroupName `
         -AutomationAccountName $AutomationAccountName `
         -RunbookName $runbookName `
         -ScheduleName $dailyScheduleName `
-        -Parameters @{ Operation = 'Detect' } | Out-Null
+        -Parameters $dailyScheduleParameters | Out-Null
 }
 
 try {
@@ -212,5 +284,7 @@ finally {
     WorkbookEnabled     = $true
     DailySchedule       = $dailyScheduleName
     DailyScheduleTimeZone = $DailyScheduleTimeZone
+    DailyScheduleOperation = $dailyScheduleOperation
+    RestartRemediatedVms = [bool]($EnableScheduledRemoval -and $RestartRemediatedVms)
     NextStep            = 'Start Invoke-GhostNicMaintenance with Operation=Detect; target VMs will be discovered from the configured resource groups.'
 }

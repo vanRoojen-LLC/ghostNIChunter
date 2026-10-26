@@ -4,7 +4,7 @@
     {
       "type": 1,
       "content": {
-        "json": "# Ghost NIC Hunter\n\n**Latest successful scan per VM.** History retains every structured result, including cleaned VMs. Removal totals include reported candidate removals even when final safety validation aborts; safety aborts remain identified separately. Data can arrive a few minutes after the Automation job completes."
+        "json": "# Ghost NIC Hunter\n\n**Latest maintenance state per VM.** `CleanupPending` means ghost NICs were detected but remain; `RebootPending` means cleanup succeeded and Windows should be restarted; `OfflineSkipped` means all retry checks found the VM offline. Data can arrive a few minutes after the Automation job completes."
       },
       "name": "title",
       "customWidth": "90"
@@ -19,7 +19,7 @@
             "type": 3,
             "content": {
         "version": "KqlItem/1.0",
-        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount)\n| where Succeeded and isnotnull(GhostedCount)\n| summarize arg_max(TimeGenerated, GhostedCount) by VmResourceId\n| summarize CurrentGhostNics = sum(GhostedCount), VmsWithGhosts = countif(GhostedCount > 0), VmsScanned = count()\n| project Metrics = pack_array(pack('Metric', 'Current ghost NICs', 'Value', CurrentGhostNics), pack('Metric', 'VMs with ghosts', 'Value', VmsWithGhosts), pack('Metric', 'VMs scanned', 'Value', VmsScanned))\n| mv-expand Metrics\n| project Metric = tostring(Metrics.Metric), Value = tolong(Metrics.Value)",
+        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Operation = tostring(event.Operation), Outcome = tostring(event.Outcome), ReportedState = tostring(event.MaintenanceState), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), RemainingCount = toint(event.RemainingCount), RestartRequired = tobool(event.RestartRequired)\n| where isnotempty(VmResourceId)\n| extend PendingGhosts = case(isnotnull(RemainingCount), RemainingCount, Operation == 'Remove' and isnotnull(RemovedCount), iff(GhostedCount > RemovedCount, GhostedCount - RemovedCount, 0), GhostedCount)\n| extend MaintenanceState = case(isnotempty(ReportedState), ReportedState, Outcome == 'OfflineSkipped', 'OfflineSkipped', Outcome in ('SafetyAbort', 'PartialFailure', 'RunCommandFailed', 'RestartFailed'), 'AttentionRequired', Operation == 'Remove' and RemovedCount > 0 and RestartRequired, 'RebootPending', PendingGhosts > 0, 'CleanupPending', isnotnull(GhostedCount), 'VerifiedClean', 'AttentionRequired')\n| summarize arg_max(TimeGenerated, PendingGhosts, MaintenanceState) by VmResourceId\n| summarize CurrentGhostNics = sum(PendingGhosts), CleanupPending = countif(MaintenanceState == 'CleanupPending'), RebootPending = countif(MaintenanceState in ('RebootPending', 'RestartInitiated')), OfflineSkipped = countif(MaintenanceState == 'OfflineSkipped'), AttentionRequired = countif(MaintenanceState in ('AttentionRequired', 'RebootFailed')), VerifiedClean = countif(MaintenanceState == 'VerifiedClean')\n| project Metrics = pack_array(pack('Metric', 'Current ghost NICs', 'Value', CurrentGhostNics), pack('Metric', 'Cleanup pending', 'Value', CleanupPending), pack('Metric', 'Reboot pending', 'Value', RebootPending), pack('Metric', 'Offline skipped', 'Value', OfflineSkipped), pack('Metric', 'Attention required', 'Value', AttentionRequired), pack('Metric', 'Verified clean', 'Value', VerifiedClean))\n| mv-expand Metrics\n| project Metric = tostring(Metrics.Metric), Value = tolong(Metrics.Value)",
         "size": 4,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
@@ -50,7 +50,7 @@
           "showBorder": false
         }
       },
-      "customWidth": "42",
+      "customWidth": "50",
       "name": "current-summary"
           },
           {
@@ -88,7 +88,7 @@
           "showBorder": false
         }
       },
-      "customWidth": "58",
+      "customWidth": "50",
       "name": "removal-summary"
           }
         ]
@@ -113,7 +113,41 @@
     },
     {
       "type": 1,
-      "content": { "json": "## Current top offenders\n\nLatest successful scan only. **VM status** is read from Azure Resource Graph when the workbook refreshes; **Last-run status** is retained as a fallback. Run Detect before removing anything." },
+      "content": { "json": "## Fleet maintenance state\n\nOne row per VM from its newest structured result. **VM status** is refreshed live from Azure Resource Graph; the maintenance state comes from the latest Automation result." },
+      "name": "maintenance-state-heading",
+      "customWidth": "90"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Operation = tostring(event.Operation), Outcome = tostring(event.Outcome), ReportedState = tostring(event.MaintenanceState), PowerState = tostring(event.PowerState), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), RemainingCount = toint(event.RemainingCount), RestartRequired = tobool(event.RestartRequired), DetectedAtUtc = todatetime(event.DetectedAtUtc)\n| where isnotempty(VmResourceId)\n| extend PendingGhosts = case(isnotnull(RemainingCount), RemainingCount, Operation == 'Remove' and isnotnull(RemovedCount), iff(GhostedCount > RemovedCount, GhostedCount - RemovedCount, 0), GhostedCount)\n| extend MaintenanceState = case(isnotempty(ReportedState), ReportedState, Outcome == 'OfflineSkipped', 'OfflineSkipped', Outcome in ('SafetyAbort', 'PartialFailure', 'RunCommandFailed', 'RestartFailed'), 'AttentionRequired', Operation == 'Remove' and RemovedCount > 0 and RestartRequired, 'RebootPending', PendingGhosts > 0, 'CleanupPending', isnotnull(GhostedCount), 'VerifiedClean', 'AttentionRequired')\n| summarize arg_max(TimeGenerated, *) by VmResourceId\n| extend VmKey = tolower(VmResourceId), LastResultUtc = coalesce(DetectedAtUtc, TimeGenerated)\n| order by MaintenanceState asc, PendingGhosts desc, LastResultUtc asc\n| project VmKey, VM = VmResourceId, LastRunVmStatus = PowerState, MaintenanceState, Operation, Outcome, PendingGhosts, RemovedCount, RestartRequired, LastResultUtc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": { "filter": true, "rowLimit": 1000 }
+      },
+      "conditionalVisibility": { "parameterName": "_", "comparison": "isEqualTo", "value": "_" },
+      "name": "maintenance-state-source"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "{\"version\":\"Merge/1.0\",\"merges\":[{\"id\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\",\"mergeType\":\"leftouter\",\"leftTable\":\"maintenance-state-source\",\"rightTable\":\"live-vm-status\",\"leftColumn\":\"VmKey\",\"rightColumn\":\"VmKey\"}],\"projectRename\":[{\"originalName\":\"[maintenance-state-source].VM\",\"mergedName\":\"VM\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[live-vm-status].LiveVmStatus\",\"mergedName\":\"VM status\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].LastRunVmStatus\",\"mergedName\":\"Last-run status\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].MaintenanceState\",\"mergedName\":\"Maintenance state\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].Operation\",\"mergedName\":\"Operation\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].Outcome\",\"mergedName\":\"Outcome\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].PendingGhosts\",\"mergedName\":\"Remaining ghosts\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].RemovedCount\",\"mergedName\":\"Removed\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].RestartRequired\",\"mergedName\":\"Restart required\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].LastResultUtc\",\"mergedName\":\"Last result UTC\",\"fromId\":\"b93c1517-d742-4a31-bf2f-4f0f5d5ea636\"},{\"originalName\":\"[maintenance-state-source].VmKey\"},{\"originalName\":\"[maintenance-state-source].TableName\"},{\"originalName\":\"[live-vm-status].VmKey\"}]}",
+        "size": 0,
+        "queryType": 7,
+        "visualization": "table",
+        "showRefreshButton": true,
+        "gridSettings": { "filter": true, "rowLimit": 1000 }
+      },
+      "name": "maintenance-state",
+      "customWidth": "90"
+    },
+    {
+      "type": 1,
+      "content": { "json": "## Current top offenders\n\nNewest structured result with ghost counts, adjusted for removals reported by that result. **VM status** is read from Azure Resource Graph when the workbook refreshes; **Last-run status** is retained as a fallback." },
       "name": "current-heading",
       "customWidth": "90"
     },
@@ -121,7 +155,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let events = union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), GhostedCount = toint(event.GhostedCount), ValidCount = toint(event.ValidCount), LastScanUtc = todatetime(event.DetectedAtUtc), PowerState = tostring(event.PowerState);\nlet latestStatus = events\n| extend LastRunVmStatus = iff(isnotempty(PowerState), PowerState, iff(Succeeded and isnotnull(GhostedCount), 'VM running', ''))\n| where isnotempty(LastRunVmStatus)\n| summarize arg_max(TimeGenerated, LastRunVmStatus) by VmResourceId\n| project VmResourceId, LastRunVmStatus;\nevents\n| where Succeeded and isnotnull(GhostedCount)\n| summarize arg_max(TimeGenerated, GhostedCount, ValidCount, LastScanUtc) by VmResourceId\n| where GhostedCount > 0\n| join kind=leftouter latestStatus on VmResourceId\n| extend VmKey = tolower(VmResourceId), LastRunVmStatus = coalesce(LastRunVmStatus, 'Not recorded')\n| order by GhostedCount desc, LastScanUtc asc\n| project VmKey, VM = VmResourceId, LastRunVmStatus, GhostNicsNow = GhostedCount, ValidNics = ValidCount, LastScanUTC = LastScanUtc",
+        "query": "let events = union isfuzzy=true AzureDiagnostics, (datatable(TimeGenerated:datetime, ResourceProvider:string, Category:string, StreamType_s:string, RunbookName_s:string, ResultDescription:string)[])\n| where ResourceProvider == 'MICROSOFT.AUTOMATION' and Category == 'JobStreams' and StreamType_s == 'Output' and RunbookName_s == 'Invoke-GhostNicMaintenance'\n| extend raw = tostring(ResultDescription)\n| where raw startswith 'GHNIC_RESULT:'\n| extend event = parse_json(substring(raw, strlen('GHNIC_RESULT:')))\n| extend VmResourceId = tostring(event.VmResourceId), Succeeded = tobool(event.Succeeded), Operation = tostring(event.Operation), GhostedCount = toint(event.GhostedCount), RemovedCount = toint(event.RemovedCount), RemainingCount = toint(event.RemainingCount), ValidCount = toint(event.ValidCount), LastScanUtc = todatetime(event.DetectedAtUtc), PowerState = tostring(event.PowerState);\nlet latestStatus = events\n| extend LastRunVmStatus = iff(isnotempty(PowerState), PowerState, iff(Succeeded and isnotnull(GhostedCount), 'VM running', ''))\n| where isnotempty(LastRunVmStatus)\n| summarize arg_max(TimeGenerated, LastRunVmStatus) by VmResourceId\n| project VmResourceId, LastRunVmStatus;\nevents\n| where isnotnull(GhostedCount)\n| extend PendingGhosts = case(isnotnull(RemainingCount), RemainingCount, Operation == 'Remove' and isnotnull(RemovedCount), iff(GhostedCount > RemovedCount, GhostedCount - RemovedCount, 0), GhostedCount)\n| summarize arg_max(TimeGenerated, PendingGhosts, ValidCount, LastScanUtc) by VmResourceId\n| where PendingGhosts > 0\n| join kind=leftouter latestStatus on VmResourceId\n| extend VmKey = tolower(VmResourceId), LastRunVmStatus = coalesce(LastRunVmStatus, 'Not recorded')\n| order by PendingGhosts desc, LastScanUtc asc\n| project VmKey, VM = VmResourceId, LastRunVmStatus, GhostNicsNow = PendingGhosts, ValidNics = ValidCount, LastScanUTC = LastScanUtc",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
